@@ -1,0 +1,42 @@
+{
+  "name": "immich",
+  "version": "2.5.2",
+  "license": "GNU Affero General Public License version 3",
+  "scripts": {
+    "dev": "wrangler dev --ip 0.0.0.0",
+    "deploy": "wrangler deploy",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "hono": "*",
+    "@hono/zod-validator": "*",
+    "kysely": "*",
+    "kysely-d1": "*",
+    "zod": "*",
+    "jose": "*",
+    "bcryptjs": "*",
+    "cookie": "*",
+    "luxon": "*",
+    "uuid": "*",
+    "sanitize-filename": "*",
+    "thumbhash": "*",
+    "fflate": "*",
+    "exifreader": "*",
+    "ua-parser-js": "*",
+    "semver": "*",
+    "lodash": "*"
+  },
+  "devDependencies": {
+    "wrangler": "*",
+    "@cloudflare/workers-types": "*",
+    "@cloudflare/vitest-pool-workers": "*",
+    "vitest": "*",
+    "typescript": "*",
+    "@types/bcryptjs": "*",
+    "@types/cookie": "*",
+    "@types/luxon": "*",
+    "@types/uuid": "*",
+    "@types/ua-parser-js": "*",
+    "@types/lodash": "*"
+  }
+}

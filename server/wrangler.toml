@@ -1,0 +1,30 @@
+name = "workers-immich"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# [build]
+# command = "cd ../web && npm run build"
+
+[assets]
+directory = "../web/build"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/.well-known/*", "/custom.css"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "immich-db"
+database_id = "04bc26ac-109f-42ff-9b50-05ebbb4edd84"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "immich-media"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "af23353cc677482f9e74e6e3bb3250c6"
+
+[vars]
+ENVIRONMENT = "production"
