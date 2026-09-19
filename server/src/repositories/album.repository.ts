@@ -16,7 +16,8 @@ import type { Insertable, Kysely, Updateable } from 'kysely';
 import { sql } from 'kysely';
 import type { DB, AlbumTable } from 'src/schema';
 
-const CHUNK_SIZE = 500;
+const CHUNK_SIZE = 90;
+const INSERT_CHUNK_SIZE = 45;
 
 export interface AlbumAssetCount {
   albumId: string;
@@ -83,6 +84,7 @@ export class AlbumRepository {
         .where('album_asset.albumId', '=', id)
         .where('asset.deletedAt', 'is', null)
         .where('asset.visibility', '!=', 'hidden')
+        .where('asset.visibility', '!=', 'locked')
         .orderBy('asset.fileCreatedAt', 'desc')
         .execute();
     }
@@ -140,6 +142,7 @@ export class AlbumRepository {
         .where('album_asset.albumId', 'in', chunk)
         .where('asset.deletedAt', 'is', null)
         .where('asset.visibility', '!=', 'hidden')
+        .where('asset.visibility', '!=', 'locked')
         .groupBy('album_asset.albumId')
         .execute();
 
@@ -253,10 +256,16 @@ export class AlbumRepository {
     for (let i = 0; i < assetIds.length; i += CHUNK_SIZE) {
       const chunk = assetIds.slice(i, i + CHUNK_SIZE);
       await this.db
+        .updateTable('album')
+        .set({ albumThumbnailAssetId: null })
+        .where('albumThumbnailAssetId', 'in', chunk)
+        .execute();
+      await this.db
         .deleteFrom('album_asset')
         .where('album_asset.assetId', 'in', chunk)
         .execute();
     }
+    await this.updateThumbnails();
   }
 
   async removeAssetIds(albumId: string, assetIds: string[]): Promise<void> {
@@ -329,14 +338,7 @@ export class AlbumRepository {
         .execute();
     }
 
-    // Fetch the created album with relations
-    const createdAlbum = await this.db
-      .selectFrom('album')
-      .selectAll()
-      .where('id', '=', newAlbumId)
-      .executeTakeFirstOrThrow();
-
-    return createdAlbum;
+    return this.getById(newAlbumId, { withAssets: true });
   }
 
   async update(id: string, album: Updateable<AlbumTable>) {
@@ -483,6 +485,7 @@ export class AlbumRepository {
       .selectFrom('album_asset')
       .innerJoin('asset', 'asset.id', 'album_asset.assetId')
       .where('asset.deletedAt', 'is', null)
+      .where('asset.visibility', '!=', 'locked')
       .where('album_asset.albumId', '=', id)
       .select('asset.ownerId as userId')
       .select((eb) => eb.fn.count('asset.id').as('assetCount'))
@@ -496,8 +499,8 @@ export class AlbumRepository {
       return;
     }
 
-    for (let i = 0; i < values.length; i += CHUNK_SIZE) {
-      const chunk = values.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < values.length; i += INSERT_CHUNK_SIZE) {
+      const chunk = values.slice(i, i + INSERT_CHUNK_SIZE);
       await this.db.insertInto('album_asset').values(chunk).execute();
     }
   }
@@ -511,8 +514,8 @@ export class AlbumRepository {
       return;
     }
 
-    for (let i = 0; i < assetIds.length; i += CHUNK_SIZE) {
-      const chunk = assetIds.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < assetIds.length; i += INSERT_CHUNK_SIZE) {
+      const chunk = assetIds.slice(i, i + INSERT_CHUNK_SIZE);
       await db
         .insertInto('album_asset')
         .values(chunk.map((assetId) => ({ albumId, assetId })))

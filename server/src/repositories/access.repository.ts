@@ -22,7 +22,8 @@ import type { DB } from 'src/schema';
 // Helper: chunk large sets to avoid SQLite parameter limits
 // ---------------------------------------------------------------------------
 
-const CHUNK_SIZE = 500;
+// Some access queries bind each ID multiple times; keep the worst case under D1's 100-bind limit.
+const CHUNK_SIZE = 20;
 
 async function chunkedCheck<T>(
   ids: Set<string>,
@@ -200,7 +201,8 @@ class AssetAccess {
         .innerJoin('asset', (join) =>
           join
             .onRef('asset.id', '=', 'albumAssets.assetId')
-            .on('asset.deletedAt', 'is', null),
+            .on('asset.deletedAt', 'is', null)
+            .on('asset.visibility', '!=', AssetVisibility.Locked),
         )
         .leftJoin(
           'album_user as albumUsers',
@@ -237,7 +239,7 @@ class AssetAccess {
           allowedIds.add(row.livePhotoVideoId);
         }
       }
-      return allowedIds;
+      return this.filterUnlockedAssetIds(allowedIds);
     });
   }
 
@@ -313,13 +315,15 @@ class AssetAccess {
         .leftJoin('asset', (join) =>
           join
             .onRef('asset.id', '=', 'shared_link_asset.assetId')
-            .on('asset.deletedAt', 'is', null),
+            .on('asset.deletedAt', 'is', null)
+            .on('asset.visibility', '!=', AssetVisibility.Locked),
         )
         .leftJoin('album_asset', 'album_asset.albumId', 'album.id')
         .leftJoin('asset as albumAssets', (join) =>
           join
             .onRef('albumAssets.id', '=', 'album_asset.assetId')
-            .on('albumAssets.deletedAt', 'is', null),
+            .on('albumAssets.deletedAt', 'is', null)
+            .on('albumAssets.visibility', '!=', AssetVisibility.Locked),
         )
         .select([
           'asset.id as assetId',
@@ -359,8 +363,24 @@ class AssetAccess {
           allowedIds.add(row.albumAssetLivePhotoVideoId);
         }
       }
-      return allowedIds;
+      return this.filterUnlockedAssetIds(allowedIds);
     });
+  }
+
+  private async filterUnlockedAssetIds(ids: Set<string>): Promise<Set<string>> {
+    if (ids.size === 0) {
+      return ids;
+    }
+
+    const rows = await this.db
+      .selectFrom('asset')
+      .select('asset.id')
+      .where('asset.id', 'in', [...ids])
+      .where('asset.deletedAt', 'is', null)
+      .where('asset.visibility', '!=', AssetVisibility.Locked)
+      .execute();
+
+    return new Set(rows.map((row) => row.id));
   }
 }
 

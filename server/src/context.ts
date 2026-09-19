@@ -11,6 +11,7 @@ import { D1Dialect } from 'kysely-d1';
 import type { DB } from './schema';
 import type { Env } from './env';
 import { CryptoRepository } from './repositories/crypto.repository';
+import { createRealtimeService, type RealtimeService } from './services/realtime.service';
 
 // ---------------------------------------------------------------------------
 // ServiceContext interface
@@ -27,6 +28,8 @@ export interface ServiceContext {
   env: Env;
   /** Workers-compatible crypto utilities. */
   crypto: CryptoRepository;
+  /** Cross-isolate realtime event publisher. */
+  realtime: RealtimeService;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,5 +80,6 @@ export function createServiceContext(env: Env): ServiceContext {
     kv: env.KV,
     env,
     crypto: cryptoSingleton,
+    realtime: createRealtimeService(env),
   };
 }

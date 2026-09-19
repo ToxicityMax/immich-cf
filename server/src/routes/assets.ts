@@ -8,8 +8,10 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
+import { validate } from '../middleware/validate';
 import { Permission } from '../enum';
 import { AssetMediaSize } from '../dtos/asset-media.dto';
+import { AssetBulkUpdateSchema, UpdateAssetSchema } from '../dtos/asset.dto';
 import type { AssetMediaRedirectResponse } from '../services/asset-media.service';
 
 const app = new Hono<AppEnv>();
@@ -366,10 +368,11 @@ app.post(
 app.put(
   '/',
   authMiddleware({ permission: Permission.AssetUpdate }),
+  validate('json', AssetBulkUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     await services.asset.updateAll(auth, body);
     return c.body(null, 204);
   },
@@ -444,11 +447,12 @@ app.get(
 app.put(
   '/:id',
   authMiddleware({ permission: Permission.AssetUpdate }),
+  validate('json', UpdateAssetSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.asset.update(auth, id, body);
     return c.json(result);
   },

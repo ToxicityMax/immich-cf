@@ -44,5 +44,5 @@ export const mapSession = (entity: Session, currentId?: string): SessionResponse
   appVersion: entity.appVersion,
   deviceOS: entity.deviceOS,
   deviceType: entity.deviceType,
-  isPendingSyncReset: entity.isPendingSyncReset,
+  isPendingSyncReset: Boolean(entity.isPendingSyncReset),
 });

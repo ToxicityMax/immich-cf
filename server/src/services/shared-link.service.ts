@@ -6,6 +6,7 @@
  */
 
 import type { AuthDto } from 'src/dtos/auth.dto';
+import { mapSharedLink } from 'src/dtos/shared-link.dto';
 import { Permission, SharedLinkType } from 'src/enum';
 import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
@@ -30,7 +31,7 @@ export class SharedLinkService {
       id: dto.id,
       albumId: dto.albumId,
     });
-    return links;
+    return links.map((link: any) => mapSharedLink(link, { stripAssetMetadata: false }));
   }
 
   async getMine(auth: AuthDto, dto: { password?: string; token?: string }) {
@@ -40,16 +41,20 @@ export class SharedLinkService {
 
     const sharedLink = await this.findOrFail(auth.sharedLink.userId, auth.sharedLink.id);
 
+    const response = mapSharedLink(sharedLink as any, {
+      stripAssetMetadata: !Boolean(sharedLink.showExif),
+    });
     if (sharedLink.password) {
       const token = this.validateAndRefreshToken(sharedLink, dto);
-      return { ...sharedLink, token };
+      return { ...response, token };
     }
 
-    return sharedLink;
+    return response;
   }
 
   async get(auth: AuthDto, id: string) {
-    return this.findOrFail(auth.user.id, id);
+    const sharedLink = await this.findOrFail(auth.user.id, id);
+    return mapSharedLink(sharedLink as any, { stripAssetMetadata: false });
   }
 
   async create(auth: AuthDto, dto: any) {
@@ -81,6 +86,7 @@ export class SharedLinkService {
     const keyBytes = crypto.getRandomValues(new Uint8Array(50));
 
     const sharedLink = await this.sharedLinkRepository.create({
+      id: this.ctx.crypto.randomUUID(),
       key: keyBytes,
       userId: auth.user.id,
       type: dto.type,
@@ -95,7 +101,7 @@ export class SharedLinkService {
       slug: dto.slug || null,
     });
 
-    return sharedLink;
+    return mapSharedLink(sharedLink as any, { stripAssetMetadata: false });
   }
 
   async update(auth: AuthDto, id: string, dto: any) {
@@ -113,7 +119,7 @@ export class SharedLinkService {
       slug: dto.slug || null,
     });
 
-    return sharedLink;
+    return mapSharedLink(sharedLink as any, { stripAssetMetadata: false });
   }
 
   async remove(auth: AuthDto, id: string): Promise<void> {

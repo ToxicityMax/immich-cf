@@ -83,6 +83,9 @@ export class ApiKeyService {
     }
 
     const key = await this.apiKeyRepo.update(auth.user.id, id, updateData);
+    if (dto.permissions !== undefined) {
+      await this.ctx.realtime.disconnectApiKey(id);
+    }
     return this.map(key);
   }
 
@@ -93,6 +96,7 @@ export class ApiKeyService {
     }
 
     await this.apiKeyRepo.delete(auth.user.id, id);
+    await this.ctx.realtime.disconnectApiKey(id);
   }
 
   async getMine(auth: AuthDto): Promise<APIKeyResponseDto> {

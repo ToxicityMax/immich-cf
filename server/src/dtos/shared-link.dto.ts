@@ -81,21 +81,27 @@ export interface SharedLinkResponseDto {
 
 export function mapSharedLink(sharedLink: SharedLink, options: { stripAssetMetadata: boolean }): SharedLinkResponseDto {
   const assets = sharedLink.assets || [];
+  const key = sharedLink.key as unknown as Uint8Array | ArrayBuffer;
+  const keyBytes = key instanceof Uint8Array ? key : new Uint8Array(key);
+  const encodedKey = btoa(String.fromCharCode(...keyBytes))
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/, '');
 
   const response = {
     id: sharedLink.id,
     description: sharedLink.description,
     password: sharedLink.password,
     userId: sharedLink.userId,
-    key: sharedLink.key.toString('base64url'),
+    key: encodedKey,
     type: sharedLink.type,
     createdAt: sharedLink.createdAt,
     expiresAt: sharedLink.expiresAt,
     assets: assets.map((asset) => mapAsset(asset, { stripMetadata: options.stripAssetMetadata })),
     album: sharedLink.album ? mapAlbumWithoutAssets(sharedLink.album) : undefined,
-    allowUpload: sharedLink.allowUpload,
-    allowDownload: sharedLink.allowDownload,
-    showMetadata: sharedLink.showExif,
+    allowUpload: Boolean(sharedLink.allowUpload),
+    allowDownload: Boolean(sharedLink.allowDownload),
+    showMetadata: Boolean(sharedLink.showExif),
     slug: sharedLink.slug,
   };
 

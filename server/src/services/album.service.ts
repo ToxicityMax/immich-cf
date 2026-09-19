@@ -6,6 +6,11 @@
  */
 
 import type { AuthDto } from 'src/dtos/auth.dto';
+import {
+  mapAlbum,
+  mapAlbumWithAssets,
+  mapAlbumWithoutAssets,
+} from 'src/dtos/album.dto';
 import { Permission } from 'src/enum';
 import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
@@ -65,7 +70,7 @@ export class AlbumService {
     }
 
     return albums.map((album: any) => ({
-      ...album,
+      ...mapAlbumWithoutAssets(this.normalizeAlbum(album)),
       sharedLinks: undefined,
       startDate: albumMetadata[album.id]?.startDate ?? undefined,
       endDate: albumMetadata[album.id]?.endDate ?? undefined,
@@ -91,7 +96,7 @@ export class AlbumService {
     const isShared = hasSharedUsers || hasSharedLink;
 
     return {
-      ...album,
+      ...mapAlbum(this.normalizeAlbum(album), withAssets, auth),
       startDate: albumMetadataForIds?.startDate ?? undefined,
       endDate: albumMetadataForIds?.endDate ?? undefined,
       assetCount: albumMetadataForIds?.assetCount ?? 0,
@@ -133,7 +138,7 @@ export class AlbumService {
       albumUsers,
     );
 
-    return album;
+    return mapAlbumWithAssets(this.normalizeAlbum(album));
   }
 
   async update(auth: AuthDto, id: string, dto: any) {
@@ -161,7 +166,9 @@ export class AlbumService {
       order: dto.order,
     });
 
-    return updatedAlbum;
+    return mapAlbumWithoutAssets(
+      this.normalizeAlbum({ ...updatedAlbum, assets: album.assets }),
+    );
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {
@@ -325,7 +332,8 @@ export class AlbumService {
       await this.albumUserRepository.create({ userId, albumId: id, role: role || 'viewer' });
     }
 
-    return this.findOrFail(id, { withAssets: true });
+    const updatedAlbum = await this.findOrFail(id, { withAssets: true });
+    return mapAlbumWithAssets(this.normalizeAlbum(updatedAlbum));
   }
 
   async removeUser(auth: AuthDto, id: string, userId: string): Promise<void> {
@@ -370,5 +378,19 @@ export class AlbumService {
       throw new Error('Album not found');
     }
     return album;
+  }
+
+  private normalizeAlbum(album: any) {
+    return {
+      ...album,
+      isActivityEnabled: Boolean(album.isActivityEnabled),
+      assets: album.assets?.map((asset: any) => ({
+        ...asset,
+        isEdited: Boolean(asset.isEdited),
+        isExternal: Boolean(asset.isExternal),
+        isFavorite: Boolean(asset.isFavorite),
+        isOffline: Boolean(asset.isOffline),
+      })),
+    };
   }
 }

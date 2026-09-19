@@ -30,6 +30,7 @@ export type AuthUser = {
 export type AuthSession = {
   id: string;
   hasElevatedPermission: boolean;
+  expiresAt?: string | null;
 };
 
 export type AuthApiKey = {

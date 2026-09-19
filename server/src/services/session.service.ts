@@ -106,15 +106,21 @@ export class SessionService {
       ids: [id],
     });
     await this.sessionRepo.delete(id);
+    await this.ctx.realtime.sendSession(id, 'on_session_delete', id);
+    await this.ctx.realtime.disconnectSession(id);
   }
 
   async deleteAll(auth: AuthDto): Promise<void> {
     const userId = auth.user.id;
     const currentSessionId = auth.session?.id;
-    await this.sessionRepo.invalidate({
+    const sessions = await this.sessionRepo.invalidate({
       userId,
       excludeId: currentSessionId,
     });
+    for (const session of sessions) {
+      await this.ctx.realtime.sendSession(session.id, 'on_session_delete', session.id);
+      await this.ctx.realtime.disconnectSession(session.id);
+    }
   }
 
   async lock(auth: AuthDto, id: string): Promise<void> {
@@ -128,6 +134,10 @@ export class SessionService {
 
   async handleCleanup(): Promise<void> {
     const sessions = await this.sessionRepo.cleanup();
+    for (const session of sessions) {
+      await this.ctx.realtime.sendSession(session.id, 'on_session_delete', session.id);
+      await this.ctx.realtime.disconnectSession(session.id);
+    }
     // In Workers we don't have a logger, but the cleanup still happens
     console.log(`Deleted ${sessions.length} expired session tokens`);
   }

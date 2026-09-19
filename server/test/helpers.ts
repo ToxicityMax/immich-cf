@@ -110,11 +110,12 @@ export function createTestImage(): ArrayBuffer {
 /**
  * Upload a test asset and return its ID.
  */
-export async function uploadTestAsset(token: string): Promise<string> {
+export async function uploadTestAsset(token: string, unique = ''): Promise<string> {
   const image = createTestImage();
   const formData = new FormData();
-  formData.append('assetData', new File([image], 'test.jpg', { type: 'image/jpeg' }));
-  formData.append('deviceAssetId', 'test-device-asset-1');
+  const fileParts: BlobPart[] = unique ? [image, new TextEncoder().encode(unique)] : [image];
+  formData.append('assetData', new File(fileParts, `test${unique ? `-${unique}` : ''}.jpg`, { type: 'image/jpeg' }));
+  formData.append('deviceAssetId', `test-device-asset-${unique || '1'}`);
   formData.append('deviceId', 'test-device-1');
   formData.append('fileCreatedAt', new Date().toISOString());
   formData.append('fileModifiedAt', new Date().toISOString());

@@ -23,7 +23,7 @@
   const common = $derived({ title: $t('reset'), size: 'small' as ModalSize, icon: mdiLockReset, onClose });
 </script>
 
-{#if featureFlagsManager.value.passwordLogin === false}
+{#if featureFlagsManager.value.passwordLogin !== false}
   <FormModal {...common} submitColor="danger" submitText={$t('reset')} disabled={!password} {onSubmit}>
     <Stack gap={4}>
       <div>{$t('reset_pin_code_description')}</div>

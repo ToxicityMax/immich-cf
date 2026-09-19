@@ -11,6 +11,7 @@
  */
 
 import type { Insertable, Kysely, Updateable } from 'kysely';
+import { AssetVisibility } from 'src/enum';
 import type { DB, StackTable } from 'src/schema';
 
 export interface StackSearch {
@@ -18,10 +19,20 @@ export interface StackSearch {
   primaryAssetId?: string;
 }
 
-export class StackRepository {
-  constructor(private db: Kysely<DB>) {}
+const getVisibleAssetTypes = (includeLocked: boolean) =>
+  includeLocked
+    ? [AssetVisibility.Archive, AssetVisibility.Timeline, AssetVisibility.Locked]
+    : [AssetVisibility.Archive, AssetVisibility.Timeline];
 
-  async search(query: StackSearch) {
+const CHUNK_SIZE = 90;
+
+export class StackRepository {
+  constructor(
+    private db: Kysely<DB>,
+    private d1: D1Database,
+  ) {}
+
+  async search(query: StackSearch, includeLocked = false) {
     let q = this.db
       .selectFrom('stack')
       .selectAll('stack')
@@ -31,87 +42,98 @@ export class StackRepository {
       q = q.where('stack.primaryAssetId', '=', query.primaryAssetId);
     }
 
-    const stacks = await q.execute();
-    return this.enrichStacks(stacks);
+    const stacks = await this.enrichStacks(await q.execute(), includeLocked);
+    return includeLocked
+      ? stacks
+      : stacks.filter((stack) => stack.assets.some((asset: any) => asset.id === stack.primaryAssetId));
   }
 
-  async create(entity: Omit<Insertable<StackTable>, 'primaryAssetId'>, assetIds: string[]) {
-    return this.db.transaction().execute(async (tx) => {
-      // Find existing stacks that will be merged
-      const stacks = await tx
+  async create(
+    entity: Omit<Insertable<StackTable>, 'primaryAssetId'>,
+    assetIds: string[],
+    includeLocked = false,
+  ) {
+    if (assetIds.length === 0) {
+      throw new Error('A stack requires at least one asset');
+    }
+
+    const stackIds = new Set<string>();
+    for (let i = 0; i < assetIds.length; i += CHUNK_SIZE) {
+      const stacks = await this.db
         .selectFrom('stack')
         .where('stack.ownerId', '=', entity.ownerId)
-        .where('stack.primaryAssetId', 'in', assetIds)
+        .where('stack.primaryAssetId', 'in', assetIds.slice(i, i + CHUNK_SIZE))
         .select('stack.id')
         .execute();
 
-      const uniqueIds = new Set<string>(assetIds);
-
-      // Collect children from existing stacks
       for (const stack of stacks) {
-        const childAssets = await tx
-          .selectFrom('asset')
-          .select('asset.id')
-          .where('asset.stackId', '=', stack.id)
-          .where('asset.deletedAt', 'is', null)
-          .execute();
-
-        for (const asset of childAssets) {
-          uniqueIds.add(asset.id);
-        }
+        stackIds.add(stack.id);
       }
+    }
 
-      // Delete old stacks
-      if (stacks.length > 0) {
-        await tx
-          .deleteFrom('stack')
-          .where(
-            'id',
-            'in',
-            stacks.map((s) => s.id),
-          )
-          .execute();
-      }
+    const uniqueIds = new Set<string>(assetIds);
 
-      // Create new stack
-      const rows = await tx
-        .insertInto('stack')
-        .values({ ...entity, primaryAssetId: assetIds[0] })
-        .returning('id')
-        .execute();
-
-      const newId = rows[0]?.id;
-      if (!newId) {
-        throw new Error('Failed to create stack');
-      }
-
-      // Assign assets to new stack
-      await tx
-        .updateTable('asset')
-        .set({
-          stackId: newId,
-          updatedAt: new Date().toISOString(),
-        })
-        .where('id', 'in', [...uniqueIds])
-        .execute();
-
-      // Fetch and return the new stack with assets
-      const newStack = await tx
-        .selectFrom('stack')
-        .selectAll('stack')
-        .where('id', '=', newId)
-        .executeTakeFirstOrThrow();
-
-      const assets = await tx
+    for (const stackId of stackIds) {
+      const childAssets = await this.db
         .selectFrom('asset')
-        .selectAll('asset')
-        .where('asset.stackId', '=', newId)
+        .select('asset.id')
+        .where('asset.stackId', '=', stackId)
         .where('asset.deletedAt', 'is', null)
-        .where('asset.visibility', '!=', 'hidden')
         .execute();
 
-      return { ...newStack, assets };
-    });
+      for (const asset of childAssets) {
+        uniqueIds.add(asset.id);
+      }
+    }
+
+    const statements: D1PreparedStatement[] = [];
+    const existingStackIds = [...stackIds];
+    for (let i = 0; i < existingStackIds.length; i += CHUNK_SIZE) {
+      const chunk = existingStackIds.slice(i, i + CHUNK_SIZE);
+      statements.push(
+        this.d1
+          .prepare(`DELETE FROM "stack" WHERE "id" IN (${chunk.map(() => '?').join(', ')})`)
+          .bind(...chunk),
+      );
+    }
+
+    const newId = crypto.randomUUID();
+    statements.push(
+      this.d1
+        .prepare('INSERT INTO "stack" ("id", "ownerId", "primaryAssetId") VALUES (?, ?, ?)')
+        .bind(newId, entity.ownerId, assetIds[0]),
+    );
+
+    const updatedAt = new Date().toISOString();
+    const ids = [...uniqueIds];
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      statements.push(
+        this.d1
+          .prepare(
+            `UPDATE "asset" SET "stackId" = ?, "updatedAt" = ? WHERE "id" IN (${chunk.map(() => '?').join(', ')})`,
+          )
+          .bind(newId, updatedAt, ...chunk),
+      );
+    }
+
+    await this.d1.batch(statements);
+
+    const newStack = await this.db
+      .selectFrom('stack')
+      .selectAll('stack')
+      .where('id', '=', newId)
+      .executeTakeFirstOrThrow();
+
+    const assets = await this.db
+      .selectFrom('asset')
+      .selectAll('asset')
+      .where('asset.stackId', '=', newId)
+      .where('asset.deletedAt', 'is', null)
+      .where('asset.visibility', 'in', getVisibleAssetTypes(includeLocked))
+      .execute();
+
+    return { ...newStack, assets };
   }
 
   async delete(id: string): Promise<void> {
@@ -123,7 +145,7 @@ export class StackRepository {
     await this.db.deleteFrom('stack').where('id', 'in', ids).execute();
   }
 
-  async update(id: string, entity: Updateable<StackTable>) {
+  async update(id: string, entity: Updateable<StackTable>, includeLocked = false) {
     await this.db
       .updateTable('stack')
       .set(entity)
@@ -141,13 +163,13 @@ export class StackRepository {
       .selectAll('asset')
       .where('asset.stackId', '=', id)
       .where('asset.deletedAt', 'is', null)
-      .where('asset.visibility', '!=', 'hidden')
+      .where('asset.visibility', 'in', getVisibleAssetTypes(includeLocked))
       .execute();
 
     return { ...stack, assets };
   }
 
-  async getById(id: string) {
+  async getById(id: string, includeLocked = false) {
     const stack = await this.db
       .selectFrom('stack')
       .selectAll()
@@ -163,8 +185,12 @@ export class StackRepository {
       .selectAll('asset')
       .where('asset.stackId', '=', id)
       .where('asset.deletedAt', 'is', null)
-      .where('asset.visibility', '!=', 'hidden')
+      .where('asset.visibility', 'in', getVisibleAssetTypes(includeLocked))
       .execute();
+
+    if (!includeLocked && !assets.some((asset) => asset.id === stack.primaryAssetId)) {
+      return undefined;
+    }
 
     return { ...stack, assets };
   }
@@ -190,7 +216,7 @@ export class StackRepository {
   // Private helpers
   // -------------------------------------------------------------------------
 
-  private async enrichStacks(stacks: any[]) {
+  private async enrichStacks(stacks: any[], includeLocked: boolean) {
     return Promise.all(
       stacks.map(async (stack) => {
         const assets = await this.db
@@ -198,7 +224,7 @@ export class StackRepository {
           .selectAll('asset')
           .where('asset.stackId', '=', stack.id)
           .where('asset.deletedAt', 'is', null)
-          .where('asset.visibility', '!=', 'hidden')
+          .where('asset.visibility', 'in', getVisibleAssetTypes(includeLocked))
           .execute();
 
         return { ...stack, assets };

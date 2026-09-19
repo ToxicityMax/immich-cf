@@ -147,7 +147,7 @@ export function mapAsset(entity: MapAsset, options: AssetMapOptions = {}): Asset
     fileModifiedAt: entity.fileModifiedAt,
     localDateTime: entity.localDateTime,
     updatedAt: entity.updatedAt,
-    isFavorite: options.auth?.user.id === entity.ownerId && entity.isFavorite,
+    isFavorite: Boolean(options.auth?.user.id === entity.ownerId && entity.isFavorite),
     isArchived: entity.visibility === AssetVisibility.Archive,
     isTrashed: !!entity.deletedAt,
     visibility: entity.visibility,
@@ -157,12 +157,12 @@ export function mapAsset(entity: MapAsset, options: AssetMapOptions = {}): Asset
     tags: entity.tags?.map((tag) => mapTag(tag)),
     checksum: hexOrBufferToBase64(entity.checksum)!,
     stack: withStack ? mapStack(entity) : undefined,
-    isOffline: entity.isOffline,
+    isOffline: Boolean(entity.isOffline),
     hasMetadata: true,
     duplicateId: entity.duplicateId,
     resized: true,
     width: entity.width,
     height: entity.height,
-    isEdited: entity.isEdited,
+    isEdited: Boolean(entity.isEdited),
   };
 }

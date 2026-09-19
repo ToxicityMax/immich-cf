@@ -53,8 +53,11 @@ export class ActivityRepository {
 
     const activities = await query
       .where((eb) =>
-        eb.or([
-          eb('asset.deletedAt', 'is', null),
+          eb.or([
+          eb.and([
+            eb('asset.deletedAt', 'is', null),
+            eb('asset.visibility', '!=', 'locked'),
+          ]),
           eb('asset.id', 'is', null),
         ]),
       )

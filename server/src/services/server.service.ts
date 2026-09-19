@@ -6,9 +6,8 @@
  */
 
 import type { ServiceContext } from 'src/context';
+import { SERVER_VERSION, SERVER_VERSION_RESPONSE } from 'src/constants';
 import { UserRepository } from 'src/repositories/user.repository';
-
-const SERVER_VERSION = { major: 2, minor: 5, patch: 2 };
 
 export class ServerService {
   private userRepository: UserRepository;
@@ -22,7 +21,7 @@ export class ServerService {
   }
 
   async getAboutInfo() {
-    const version = `v${SERVER_VERSION.major}.${SERVER_VERSION.minor}.${SERVER_VERSION.patch}`;
+    const version = `v${SERVER_VERSION}`;
     return {
       version,
       versionUrl: `https://github.com/immich-app/immich/releases/tag/${version}`,
@@ -31,7 +30,7 @@ export class ServerService {
   }
 
   getApkLinks() {
-    const version = `${SERVER_VERSION.major}.${SERVER_VERSION.minor}.${SERVER_VERSION.patch}`;
+    const version = SERVER_VERSION;
     const baseUrl = `https://github.com/immich-app/immich/releases/download/v${version}`;
     return {
       arm64v8a: `${baseUrl}/app-arm64-v8a-release.apk`,
@@ -71,7 +70,7 @@ export class ServerService {
   }
 
   getVersion() {
-    return SERVER_VERSION;
+    return SERVER_VERSION_RESPONSE;
   }
 
   async getVersionHistory() {

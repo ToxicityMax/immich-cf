@@ -26,6 +26,8 @@ import { AssetFileType, AssetStatus, AssetType, AssetVisibility, Permission } fr
 import type { ServiceContext } from 'src/context';
 import { AssetRepository } from 'src/repositories/asset.repository';
 import { AccessRepository } from 'src/repositories/access.repository';
+import { AlbumRepository } from 'src/repositories/album.repository';
+import { SharedLinkAssetRepository } from 'src/repositories/shared-link-asset.repository';
 import { requireAccess, requireElevatedPermission } from 'src/utils/access';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,8 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 export class AssetService {
   private assetRepository: AssetRepository;
   private accessRepository: AccessRepository;
+  private albumRepository: AlbumRepository;
+  private sharedLinkAssetRepository: SharedLinkAssetRepository;
 
   private get db() {
     return this.ctx.db;
@@ -57,6 +61,8 @@ export class AssetService {
   constructor(private ctx: ServiceContext) {
     this.assetRepository = new AssetRepository(ctx.db);
     this.accessRepository = new AccessRepository(ctx.db);
+    this.albumRepository = new AlbumRepository(ctx.db);
+    this.sharedLinkAssetRepository = new SharedLinkAssetRepository(ctx.db);
   }
 
   async getStatistics(auth: AuthDto, dto: AssetStatsDto) {
@@ -123,17 +129,43 @@ export class AssetService {
       ids: [id],
     });
 
-    const { description, dateTimeOriginal, latitude, longitude, rating, ...rest } = dto;
+    const {
+      description,
+      dateTimeOriginal,
+      isFavorite,
+      latitude,
+      livePhotoVideoId,
+      longitude,
+      rating,
+      visibility,
+    } = dto;
 
     await this.updateExif({ id, description, dateTimeOriginal, latitude, longitude, rating });
 
-    const asset = await this.assetRepository.update({ id, ...rest });
+    const asset = await this.assetRepository.update({
+      id,
+      ...omitUndefined({ isFavorite, livePhotoVideoId, visibility }),
+    });
 
     if (!asset) {
       throw new Error('Asset not found');
     }
 
-    return mapAsset(asset as any, { auth });
+    if (visibility === AssetVisibility.Locked) {
+      await this.removeAssetShares([id]);
+    }
+
+    const response = mapAsset(asset as any, { auth });
+    if (
+      (asset as any).visibility === AssetVisibility.Hidden ||
+      (asset as any).visibility === AssetVisibility.Locked
+    ) {
+      await this.ctx.realtime.sendUser((asset as any).ownerId, 'on_asset_hidden', id);
+    } else {
+      await this.emitAssetUpdate(auth, id);
+    }
+
+    return response;
   }
 
   async updateAll(auth: AuthDto, dto: AssetBulkUpdateDto): Promise<void> {
@@ -184,8 +216,17 @@ export class AssetService {
 
     // If setting to locked, remove from albums
     if (visibility === AssetVisibility.Locked) {
-      // Album removal would be handled by album repository — simplified here
-      // TODO: wire album repository when available
+      await this.removeAssetShares(ids);
+    }
+
+    if (visibility === AssetVisibility.Hidden || visibility === AssetVisibility.Locked) {
+      for (const id of ids) {
+        await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_hidden', id);
+      }
+    } else {
+      for (const id of ids) {
+        await this.emitAssetUpdate(auth, id);
+      }
     }
   }
 
@@ -224,6 +265,8 @@ export class AssetService {
     if (favorite) {
       await this.assetRepository.update({ id: targetId, isFavorite: sourceAsset.isFavorite });
     }
+
+    await this.emitAssetUpdate(auth, targetId);
   }
 
   async deleteAll(auth: AuthDto, dto: AssetBulkDeleteDto): Promise<void> {
@@ -239,6 +282,14 @@ export class AssetService {
       deletedAt: new Date().toISOString(),
       status: force ? AssetStatus.Deleted : AssetStatus.Trashed,
     });
+
+    if (force) {
+      for (const id of ids) {
+        await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_delete', id);
+      }
+    } else {
+      await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_trash', ids);
+    }
   }
 
   async getMetadata(auth: AuthDto, id: string): Promise<AssetMetadataResponseDto[]> {
@@ -266,7 +317,11 @@ export class AssetService {
       uniqueKeys.add(key);
     }
 
-    return this.assetRepository.upsertBulkMetadata(dto.items);
+    const result = await this.assetRepository.upsertBulkMetadata(dto.items);
+    for (const id of new Set(dto.items.map((item) => item.assetId))) {
+      await this.emitAssetUpdate(auth, id);
+    }
+    return result;
   }
 
   async upsertMetadata(auth: AuthDto, id: string, dto: AssetMetadataUpsertDto): Promise<AssetMetadataResponseDto[]> {
@@ -284,7 +339,9 @@ export class AssetService {
       uniqueKeys.add(key);
     }
 
-    return this.assetRepository.upsertMetadata(id, dto.items);
+    const result = await this.assetRepository.upsertMetadata(id, dto.items);
+    await this.emitAssetUpdate(auth, id);
+    return result;
   }
 
   async getMetadataByKey(auth: AuthDto, id: string, key: string): Promise<AssetMetadataResponseDto> {
@@ -307,7 +364,8 @@ export class AssetService {
       permission: Permission.AssetUpdate,
       ids: [id],
     });
-    return this.assetRepository.deleteMetadataByKey(id, key);
+    await this.assetRepository.deleteMetadataByKey(id, key);
+    await this.emitAssetUpdate(auth, id);
   }
 
   async deleteBulkMetadata(auth: AuthDto, dto: AssetMetadataBulkDeleteDto) {
@@ -317,6 +375,9 @@ export class AssetService {
       ids: dto.items.map((item) => item.assetId),
     });
     await this.assetRepository.deleteBulkMetadata(dto.items);
+    for (const id of new Set(dto.items.map((item) => item.assetId))) {
+      await this.emitAssetUpdate(auth, id);
+    }
   }
 
   async run(auth: AuthDto, dto: AssetJobsDto) {
@@ -443,6 +504,41 @@ export class AssetService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  private async getRealtimeAsset(id: string) {
+    return this.assetRepository.getById(id, {
+      exifInfo: true,
+      owner: true,
+      stack: { assets: true },
+      edits: true,
+      tags: true,
+    });
+  }
+
+  private async removeAssetShares(ids: string[]): Promise<void> {
+    await Promise.all([
+      this.albumRepository.removeAssetsFromAll(ids),
+      this.sharedLinkAssetRepository.removeAssets(ids),
+    ]);
+  }
+
+  private async emitAssetUpdate(auth: AuthDto, id: string): Promise<void> {
+    try {
+      const asset = await this.getRealtimeAsset(id);
+      if (asset) {
+        const response = mapAsset(asset as any, { auth, withStack: true });
+        if (asset.visibility === AssetVisibility.Locked) {
+          if (auth.session?.hasElevatedPermission) {
+            await this.ctx.realtime.sendSession(auth.session.id, 'on_asset_update', response);
+          }
+          return;
+        }
+        await this.ctx.realtime.sendUser(asset.ownerId, 'on_asset_update', response);
+      }
+    } catch (error) {
+      console.error(`Unable to build realtime update event for asset ${id}:`, error);
+    }
+  }
 
   private async updateExif(dto: {
     id: string;

@@ -74,6 +74,10 @@ export class TrashService {
     await this.db.deleteFrom('activity').where('assetId', 'in', assetIds).execute();
     await this.db.deleteFrom('asset').where('id', 'in', assetIds).execute();
 
+    for (const id of assetIds) {
+      await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_delete', id);
+    }
+
     return { count: trashedAssets.length };
   }
 
@@ -81,6 +85,14 @@ export class TrashService {
    * Restore all trashed assets for the current user.
    */
   async restoreAll(auth: AuthDto): Promise<TrashResponseDto> {
+    const assets = await this.db
+      .selectFrom('asset')
+      .select('id')
+      .where('ownerId', '=', auth.user.id)
+      .where('status', '=', AssetStatus.Trashed)
+      .execute();
+    const assetIds = assets.map(({ id }) => id);
+
     const result = await this.db
       .updateTable('asset')
       .set({
@@ -92,6 +104,9 @@ export class TrashService {
       .execute();
 
     const count = result.reduce((sum, r) => sum + Number(r.numUpdatedRows ?? 0), 0);
+    if (assetIds.length > 0) {
+      await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_restore', assetIds);
+    }
     return { count };
   }
 
@@ -125,6 +140,8 @@ export class TrashService {
       })
       .where('id', 'in', validIds)
       .execute();
+
+    await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_restore', validIds);
 
     return { count: validIds.length };
   }

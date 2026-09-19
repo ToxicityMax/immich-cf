@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { request, authRequest, setupDatabase } from './helpers';
+import { request, authRequest, apiKeyRequest, setupDatabase } from './helpers';
 
 describe('Auth', () => {
   beforeAll(async () => {
@@ -25,6 +25,16 @@ describe('Auth', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     });
+  }
+
+  async function createApiKey(token: string, permissions: string[]) {
+    const res = await authRequest('/api/api-keys', token, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Test API Key', permissions }),
+    });
+    expect(res.status).toBe(201);
+    return ((await res.json()) as any).secret as string;
   }
 
   // -------------------------------------------------------------------------
@@ -149,6 +159,201 @@ describe('Auth', () => {
       // Verify new password works
       const newLoginRes = await login('admin@test.com', 'newpassword456');
       expect(newLoginRes.status).toBe(200);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // PIN Code and Session Elevation
+  // -------------------------------------------------------------------------
+  describe('PIN code and session elevation', () => {
+    it('should set up a PIN code, including one with a leading zero', async () => {
+      await signUpAdmin();
+      const loginRes = await login();
+      const { accessToken } = (await loginRes.json()) as any;
+
+      const setupRes = await authRequest('/api/auth/pin-code', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '012345' }),
+      });
+      expect(setupRes.status).toBe(204);
+
+      const statusRes = await authRequest('/api/auth/status', accessToken);
+      expect(statusRes.status).toBe(200);
+      expect(await statusRes.json()).toMatchObject({
+        pinCode: true,
+        password: true,
+        isElevated: false,
+      });
+    });
+
+    it('should reject malformed and duplicate PIN setup', async () => {
+      await signUpAdmin();
+      const loginRes = await login();
+      const { accessToken } = (await loginRes.json()) as any;
+
+      const malformedRes = await authRequest('/api/auth/pin-code', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '12345' }),
+      });
+      expect(malformedRes.status).toBe(400);
+
+      const setupRes = await authRequest('/api/auth/pin-code', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+      expect(setupRes.status).toBe(204);
+
+      const duplicateRes = await authRequest('/api/auth/pin-code', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '654321' }),
+      });
+      expect(duplicateRes.status).toBe(400);
+      expect(await duplicateRes.json()).toMatchObject({ message: 'User already has a PIN code' });
+    });
+
+    it('should change a PIN only with valid credentials', async () => {
+      await signUpAdmin();
+      const loginRes = await login();
+      const { accessToken } = (await loginRes.json()) as any;
+
+      await authRequest('/api/auth/pin-code', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+
+      const wrongRes = await authRequest('/api/auth/pin-code', accessToken, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '000000', newPinCode: '654321' }),
+      });
+      expect(wrongRes.status).toBe(400);
+      expect(await wrongRes.json()).toMatchObject({ message: 'Wrong PIN code' });
+
+      const changeRes = await authRequest('/api/auth/pin-code', accessToken, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456', newPinCode: '654321' }),
+      });
+      expect(changeRes.status).toBe(204);
+
+      const oldPinRes = await authRequest('/api/auth/session/unlock', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+      expect(oldPinRes.status).toBe(400);
+
+      const newPinRes = await authRequest('/api/auth/session/unlock', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '654321' }),
+      });
+      expect(newPinRes.status).toBe(204);
+    });
+
+    it('should unlock for fifteen minutes and explicitly lock the current session', async () => {
+      await signUpAdmin();
+      const loginRes = await login();
+      const { accessToken } = (await loginRes.json()) as any;
+
+      await authRequest('/api/auth/pin-code', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+
+      const beforeUnlock = Date.now();
+      const unlockRes = await authRequest('/api/auth/session/unlock', accessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+      expect(unlockRes.status).toBe(204);
+
+      const unlockedStatus = await authRequest('/api/auth/status', accessToken);
+      const unlockedBody = (await unlockedStatus.json()) as any;
+      expect(unlockedBody.isElevated).toBe(true);
+      expect(new Date(unlockedBody.pinExpiresAt).getTime()).toBeGreaterThanOrEqual(
+        beforeUnlock + 14 * 60_000,
+      );
+
+      const lockRes = await authRequest('/api/auth/session/lock', accessToken, { method: 'POST' });
+      expect(lockRes.status).toBe(204);
+
+      const lockedStatus = await authRequest('/api/auth/status', accessToken);
+      expect(await lockedStatus.json()).toMatchObject({ pinCode: true, isElevated: false });
+    });
+
+    it('should reset with the account password and lock every session', async () => {
+      await signUpAdmin();
+      const firstLogin = await login();
+      const secondLogin = await login();
+      const firstToken = ((await firstLogin.json()) as any).accessToken as string;
+      const secondToken = ((await secondLogin.json()) as any).accessToken as string;
+
+      await authRequest('/api/auth/pin-code', firstToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+      for (const token of [firstToken, secondToken]) {
+        const res = await authRequest('/api/auth/session/unlock', token, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pinCode: '123456' }),
+        });
+        expect(res.status).toBe(204);
+      }
+
+      const resetRes = await authRequest('/api/auth/pin-code', firstToken, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: 'password123' }),
+      });
+      expect(resetRes.status).toBe(204);
+
+      for (const token of [firstToken, secondToken]) {
+        const statusRes = await authRequest('/api/auth/status', token);
+        expect(await statusRes.json()).toMatchObject({ pinCode: false, isElevated: false });
+      }
+    });
+
+    it('should enforce API key permissions and require a session for elevation', async () => {
+      await signUpAdmin();
+      const loginRes = await login();
+      const { accessToken } = (await loginRes.json()) as any;
+      const wrongPermissionKey = await createApiKey(accessToken, ['pinCode.update']);
+      const setupKey = await createApiKey(accessToken, ['pinCode.create']);
+      const allKey = await createApiKey(accessToken, ['all']);
+
+      const forbiddenRes = await apiKeyRequest('/api/auth/pin-code', wrongPermissionKey, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+      expect(forbiddenRes.status).toBe(403);
+
+      const setupRes = await apiKeyRequest('/api/auth/pin-code', setupKey, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+      expect(setupRes.status).toBe(204);
+
+      const unlockRes = await apiKeyRequest('/api/auth/session/unlock', allKey, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinCode: '123456' }),
+      });
+      expect(unlockRes.status).toBe(400);
+      expect(await unlockRes.json()).toMatchObject({
+        message: 'This endpoint can only be used with a session token',
+      });
     });
   });
 

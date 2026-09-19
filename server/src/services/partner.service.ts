@@ -6,6 +6,7 @@
  */
 
 import type { AuthDto } from 'src/dtos/auth.dto';
+import { mapUser } from 'src/dtos/user.dto';
 import { Permission } from 'src/enum';
 import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
@@ -67,7 +68,7 @@ export class PartnerService {
   private mapPartner(partner: any, direction: string) {
     const user = direction === 'shared-by' ? partner.sharedWith : partner.sharedBy;
     return {
-      ...user,
+      ...mapUser(user),
       inTimeline: Boolean(partner.inTimeline),
     };
   }

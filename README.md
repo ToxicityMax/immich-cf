@@ -12,6 +12,7 @@ This project is a fork of [Immich](https://github.com/immich-app/immich) that re
 | Database | PostgreSQL | Cloudflare D1 (SQLite) |
 | Object storage | Local filesystem / S3 | Cloudflare R2 |
 | Cache | Redis | Cloudflare KV |
+| Realtime | Socket.IO + Redis | Durable Objects + Socket.IO wire protocol |
 | Runtime | Node.js | Cloudflare Workers |
 
 ## What works
@@ -20,6 +21,7 @@ This project is a fork of [Immich](https://github.com/immich-app/immich) that re
 - Album management
 - User authentication (password + API key)
 - Mobile app sync protocol
+- Authenticated real-time updates for web and mobile clients
 - Shared links
 - Timeline and memories
 - Search
@@ -30,7 +32,6 @@ This project is a fork of [Immich](https://github.com/immich-app/immich) that re
 - ML features (facial recognition, smart search, CLIP, OCR)
 - Video transcoding
 - Background job processing
-- Real-time WebSocket events (stubbed)
 - OAuth
 - Email notifications
 - Telemetry
@@ -66,6 +67,7 @@ i18n/            Internationalization (80+ languages)
 cd server
 npm install
 npm run dev    # starts wrangler dev on 0.0.0.0:8787
+npm run test:all
 ```
 
 ### Web
@@ -83,6 +85,7 @@ The server is deployed to Cloudflare Workers via `wrangler deploy`. The web fron
 - **D1 database** for structured data
 - **R2 bucket** (`immich-media`) for photo/video storage
 - **KV namespace** for caching
+- **Durable Object namespace** for authenticated WebSocket connections and event delivery
 
 ## License
 

@@ -9,6 +9,7 @@
 import type { AuthDto } from 'src/dtos/auth.dto';
 import { mapAsset, AssetResponseDto } from 'src/dtos/asset-response.dto';
 import type { ServiceContext } from 'src/context';
+import { AssetVisibility } from 'src/enum';
 import { sql } from 'kysely';
 
 export class ViewService {
@@ -34,6 +35,9 @@ export class ViewService {
       .distinct()
       .where('asset.ownerId', '=', auth.user.id)
       .where('asset.deletedAt', 'is', null)
+      .$if(!auth.session?.hasElevatedPermission, (qb) =>
+        qb.where('asset.visibility', '!=', AssetVisibility.Locked),
+      )
       .execute();
 
     const paths = new Set<string>();
@@ -59,23 +63,11 @@ export class ViewService {
       .selectAll()
       .where('asset.ownerId', '=', auth.user.id)
       .where('asset.deletedAt', 'is', null)
-      .where('asset.originalPath', 'like', `${normalizedPath}%`)
-      // Exclude assets in subdirectories (only direct children)
-      .where(
-        this.db.fn<string>('replace', [
-          this.db.fn<string>('substr', [
-            'asset.originalPath',
-            sql.val(normalizedPath.length + 1),
-          ]),
-          sql.val('/'),
-          sql.val(''),
-        ]),
-        '=',
-        this.db.fn<string>('substr', [
-          'asset.originalPath',
-          sql.val(normalizedPath.length + 1),
-        ]),
+      .$if(!auth.session?.hasElevatedPermission, (qb) =>
+        qb.where('asset.visibility', '!=', AssetVisibility.Locked),
       )
+      .where(sql<boolean>`substr("asset"."originalPath", 1, length(${normalizedPath})) = ${normalizedPath}`)
+      .where(sql<boolean>`instr(substr("asset"."originalPath", length(${normalizedPath}) + 1), '/') = 0`)
       .orderBy('asset.fileCreatedAt', 'desc')
       .execute();
 

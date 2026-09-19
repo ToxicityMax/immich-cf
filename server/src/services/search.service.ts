@@ -9,6 +9,7 @@ import type { AuthDto } from 'src/dtos/auth.dto';
 import { AssetType, AssetVisibility } from 'src/enum';
 import type { ServiceContext } from 'src/context';
 import { mapAsset, AssetResponseDto } from 'src/dtos/asset-response.dto';
+import { requireElevatedPermission } from 'src/utils/access';
 
 export class SearchService {
   private get db() {
@@ -30,9 +31,14 @@ export class SearchService {
     type?: string;
     isFavorite?: boolean;
     isVisible?: boolean;
+    visibility?: AssetVisibility;
     page?: number;
     size?: number;
   }) {
+    if (dto.visibility === AssetVisibility.Locked) {
+      requireElevatedPermission(auth);
+    }
+
     const page = dto.page ?? 1;
     const size = dto.size ?? 250;
     const offset = (page - 1) * size;
@@ -42,7 +48,8 @@ export class SearchService {
       .leftJoin('asset_exif', 'asset_exif.assetId', 'asset.id')
       .selectAll('asset')
       .where('asset.ownerId', '=', auth.user.id)
-      .where('asset.deletedAt', 'is', null);
+      .where('asset.deletedAt', 'is', null)
+      .where('asset.visibility', '=', dto.visibility ?? AssetVisibility.Timeline);
 
     if (dto.originalFileName) {
       query = query.where('asset.originalFileName', 'like', `%${dto.originalFileName}%`);
@@ -125,7 +132,11 @@ export class SearchService {
   /**
    * Get random assets.
    */
-  async getRandom(auth: AuthDto, dto: { count?: number }) {
+  async getRandom(auth: AuthDto, dto: { count?: number; visibility?: AssetVisibility }) {
+    if (dto.visibility === AssetVisibility.Locked) {
+      requireElevatedPermission(auth);
+    }
+
     const count = dto.count ?? 1;
 
     const assets = await this.db
@@ -133,7 +144,7 @@ export class SearchService {
       .selectAll()
       .where('asset.ownerId', '=', auth.user.id)
       .where('asset.deletedAt', 'is', null)
-      .where('asset.visibility', '=', AssetVisibility.Timeline)
+      .where('asset.visibility', '=', dto.visibility ?? AssetVisibility.Timeline)
       .orderBy(this.db.fn('random'))
       .limit(count)
       .execute();
@@ -144,7 +155,16 @@ export class SearchService {
   /**
    * Find large assets by file size.
    */
-  async getLargeAssets(auth: AuthDto, dto: { minSize?: number; page?: number; size?: number }) {
+  async getLargeAssets(auth: AuthDto, dto: {
+    minSize?: number;
+    page?: number;
+    size?: number;
+    visibility?: AssetVisibility;
+  }) {
+    if (dto.visibility === AssetVisibility.Locked) {
+      requireElevatedPermission(auth);
+    }
+
     const page = dto.page ?? 1;
     const size = dto.size ?? 250;
     const offset = (page - 1) * size;
@@ -157,6 +177,7 @@ export class SearchService {
       .select('asset_exif.fileSizeInByte')
       .where('asset.ownerId', '=', auth.user.id)
       .where('asset.deletedAt', 'is', null)
+      .where('asset.visibility', '=', dto.visibility ?? AssetVisibility.Timeline)
       .where('asset_exif.fileSizeInByte', '>', minSize)
       .orderBy('asset_exif.fileSizeInByte', 'desc')
       .limit(size)
@@ -180,6 +201,7 @@ export class SearchService {
           .select('asset_exif.city')
           .distinct()
           .where('asset.ownerId', '=', auth.user.id)
+          .where('asset.visibility', '=', AssetVisibility.Timeline)
           .where('asset_exif.city', 'is not', null);
 
         if (searchQuery) {
@@ -197,6 +219,7 @@ export class SearchService {
           .select('asset_exif.country')
           .distinct()
           .where('asset.ownerId', '=', auth.user.id)
+          .where('asset.visibility', '=', AssetVisibility.Timeline)
           .where('asset_exif.country', 'is not', null);
 
         if (searchQuery) {
@@ -214,6 +237,7 @@ export class SearchService {
           .select('asset_exif.make')
           .distinct()
           .where('asset.ownerId', '=', auth.user.id)
+          .where('asset.visibility', '=', AssetVisibility.Timeline)
           .where('asset_exif.make', 'is not', null);
 
         if (searchQuery) {
@@ -231,6 +255,7 @@ export class SearchService {
           .select('asset_exif.model')
           .distinct()
           .where('asset.ownerId', '=', auth.user.id)
+          .where('asset.visibility', '=', AssetVisibility.Timeline)
           .where('asset_exif.model', 'is not', null);
 
         if (searchQuery) {

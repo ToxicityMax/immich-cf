@@ -8,10 +8,13 @@ export default defineWorkersConfig(async () => {
   return {
     test: {
       globals: true,
-      include: ['test/*.test.ts'],
-      exclude: ['test/socket.test.ts'],
+      include: ['test/socket.test.ts'],
+      isolate: false,
+      maxWorkers: 1,
       poolOptions: {
         workers: {
+          isolatedStorage: false,
+          singleWorker: true,
           wrangler: { configPath: './wrangler.toml' },
           miniflare: {
             d1Databases: ['DB'],
@@ -19,7 +22,6 @@ export default defineWorkersConfig(async () => {
             kvNamespaces: ['KV'],
             bindings: {
               TEST_MIGRATIONS: migrations,
-              ENVIRONMENT: 'testing',
             },
           },
         },

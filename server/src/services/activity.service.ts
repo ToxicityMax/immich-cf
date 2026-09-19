@@ -6,6 +6,7 @@
  */
 
 import type { AuthDto } from 'src/dtos/auth.dto';
+import { mapActivity } from 'src/dtos/activity.dto';
 import { Permission } from 'src/enum';
 import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
@@ -35,15 +36,7 @@ export class ActivityService {
       isLiked: dto.type === 'like' ? true : undefined,
     });
 
-    return activities.map((activity: any) => ({
-      id: activity.id,
-      createdAt: activity.createdAt,
-      type: activity.isLiked ? 'like' : 'comment',
-      comment: activity.comment,
-      user: activity.user,
-      assetId: activity.assetId,
-      albumId: activity.albumId,
-    }));
+    return activities.map((activity: any) => mapActivity(activity));
   }
 
   async getStatistics(auth: AuthDto, dto: any) {
@@ -67,7 +60,7 @@ export class ActivityService {
 
     const common = {
       userId: auth.user.id,
-      assetId: dto.assetId,
+      assetId: dto.assetId ?? null,
       albumId: dto.albumId,
     };
 
@@ -87,23 +80,15 @@ export class ActivityService {
 
     if (!activity) {
       activity = await this.activityRepository.create({
+        id: this.ctx.crypto.randomUUID(),
         ...common,
-        isLiked: dto.type === 'like',
-        comment: dto.comment,
+        isLiked: dto.type === 'like' ? 1 : 0,
+        comment: dto.comment ?? null,
+        updateId: this.ctx.crypto.randomUUID(),
       });
     }
 
-    const value = {
-      id: activity.id,
-      createdAt: activity.createdAt,
-      type: activity.isLiked ? 'like' : 'comment',
-      comment: activity.comment,
-      user: activity.user,
-      assetId: activity.assetId,
-      albumId: activity.albumId,
-    };
-
-    return { duplicate, value };
+    return { duplicate, value: mapActivity(activity) };
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {

@@ -7,6 +7,8 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { AssetDeltaSyncSchema, AssetFullSyncSchema } from '../dtos/sync.dto';
 import { Permission } from '../enum';
 
 const app = new Hono<AppEnv>();
@@ -15,10 +17,11 @@ const app = new Hono<AppEnv>();
 app.post(
   '/full-sync',
   authMiddleware({ permission: Permission.TimelineRead }),
+  validate('json', AssetFullSyncSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.sync.getFullSync(auth, body);
     return c.json(result);
   },
@@ -28,10 +31,11 @@ app.post(
 app.post(
   '/delta-sync',
   authMiddleware({ permission: Permission.TimelineRead }),
+  validate('json', AssetDeltaSyncSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.sync.getDeltaSync(auth, body);
     return c.json(result);
   },

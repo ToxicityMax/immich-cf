@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "wrangler dev --ip 0.0.0.0",
     "deploy": "wrangler deploy",
-    "test": "vitest"
+    "test": "vitest",
+    "test:socket": "vitest --config vitest.socket.config.ts",
+    "test:all": "vitest run && vitest --config vitest.socket.config.ts run"
   },
   "dependencies": {
     "hono": "*",

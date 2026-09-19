@@ -6,6 +6,8 @@
  */
 
 import type { AuthDto } from 'src/dtos/auth.dto';
+import { mapUserAdmin } from 'src/dtos/user.dto';
+import { mapSession } from 'src/dtos/session.dto';
 import type { ServiceContext } from 'src/context';
 import { mapPreferences } from 'src/dtos/user-preferences.dto';
 import { UserMetadataKey } from 'src/enum';
@@ -34,7 +36,7 @@ export class UserAdminService {
       id: dto.id,
       withDeleted: dto.withDeleted,
     });
-    return users;
+    return users.map((user) => this.mapUser(user));
   }
 
   async create(dto: any) {
@@ -80,7 +82,7 @@ export class UserAdminService {
     }
 
     const user = await this.userRepository.create(payload);
-    return user;
+    return this.mapUser(user);
   }
 
   async get(auth: AuthDto, id: string) {
@@ -88,7 +90,7 @@ export class UserAdminService {
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    return user;
+    return this.mapUser(user);
   }
 
   async update(auth: AuthDto, id: string, dto: any) {
@@ -128,7 +130,7 @@ export class UserAdminService {
     }
 
     const updatedUser = await this.userRepository.update(id, { ...dto, updatedAt: new Date().toISOString() });
-    return updatedUser;
+    return this.mapUser(updatedUser);
   }
 
   async delete(auth: AuthDto, id: string, dto: any) {
@@ -148,7 +150,10 @@ export class UserAdminService {
       deletedAt: new Date().toISOString(),
     });
 
-    return updatedUser;
+    await this.ctx.realtime.broadcast('on_user_delete', id);
+    await this.ctx.realtime.disconnectUser(id);
+
+    return this.mapUser(updatedUser);
   }
 
   async restore(auth: AuthDto, id: string) {
@@ -159,12 +164,12 @@ export class UserAdminService {
 
     await this.albumRepository.restoreAll(id);
     const restored = await this.userRepository.restore(id);
-    return restored;
+    return this.mapUser(restored);
   }
 
   async getSessions(auth: AuthDto, id: string) {
     const sessions = await this.sessionRepository.getByUserId(id);
-    return sessions;
+    return sessions.map((session) => mapSession(session as any));
   }
 
   async getStatistics(auth: AuthDto, id: string, dto: any) {
@@ -203,5 +208,21 @@ export class UserAdminService {
     });
 
     return mapPreferences(preferences);
+  }
+
+  private mapUser(user: any) {
+    const metadata = (user.metadata || []).map((item: any) => {
+      if (typeof item.value !== 'string') {
+        return item;
+      }
+
+      try {
+        return { ...item, value: JSON.parse(item.value) };
+      } catch {
+        return item;
+      }
+    });
+
+    return mapUserAdmin({ ...user, metadata });
   }
 }

@@ -19,12 +19,15 @@ import {
 import { mapAsset, AssetResponseDto } from 'src/dtos/asset-response.dto';
 import {
   AssetVisibility,
+  Permission,
   SyncEntityType,
   SyncRequestType,
 } from 'src/enum';
 import type { ServiceContext } from 'src/context';
-import { fromAck, serialize, toAck } from 'src/utils/sync';
+import { fromAck, mapSyncAssetV1, serialize, toAck } from 'src/utils/sync';
 import { ForbiddenException, BadRequestException } from 'src/utils/errors';
+import { AccessRepository } from 'src/repositories/access.repository';
+import { requireAccess } from 'src/utils/access';
 
 type SyncAck = {
   type: SyncEntityType;
@@ -84,11 +87,15 @@ function createJsonLinesStream(): SyncWriter & { readable: ReadableStream<Uint8A
 }
 
 export class SyncService {
+  private accessRepository: AccessRepository;
+
   private get db() {
     return this.ctx.db;
   }
 
-  constructor(private ctx: ServiceContext) {}
+  constructor(private ctx: ServiceContext) {
+    this.accessRepository = new AccessRepository(ctx.db);
+  }
 
   async getAcks(auth: AuthDto) {
     const sessionId = auth.session?.id;
@@ -282,6 +289,11 @@ export class SyncService {
    */
   async getFullSync(auth: AuthDto, dto: AssetFullSyncDto): Promise<AssetResponseDto[]> {
     const userId = dto.userId || auth.user.id;
+    await requireAccess(this.accessRepository, {
+      auth,
+      permission: Permission.TimelineRead,
+      ids: [userId],
+    });
 
     console.log(`[sync] getFullSync: userId=${userId}, limit=${dto.limit}, lastId=${dto.lastId ?? 'none'}`);
 
@@ -293,6 +305,10 @@ export class SyncService {
       .selectFrom('asset')
       .selectAll()
       .where('asset.ownerId', '=', userId)
+      .where('asset.visibility', '!=', AssetVisibility.Hidden)
+      .$if(userId !== auth.user.id, (qb) =>
+        qb.where('asset.visibility', '=', AssetVisibility.Timeline),
+      )
       .where('asset.updatedAt', '<=', updatedUntil)
       .orderBy('asset.id', 'asc')
       .limit(dto.limit);
@@ -325,12 +341,33 @@ export class SyncService {
 
     const updatedAfterIso = updatedAfter.toISOString();
 
+    const partners = await this.db
+      .selectFrom('partner')
+      .select('sharedById')
+      .where('sharedWithId', '=', auth.user.id)
+      .execute();
+    const userIds = [auth.user.id, ...partners.map((partner) => partner.sharedById)];
+    const requestedUserIds = new Set(dto.userIds);
+    if (
+      requestedUserIds.size !== userIds.length ||
+      userIds.some((userId) => !requestedUserIds.has(userId))
+    ) {
+      return FULL_SYNC;
+    }
+
+    await requireAccess(this.accessRepository, {
+      auth,
+      permission: Permission.TimelineRead,
+      ids: userIds,
+    });
+
     // Get changed assets
     const limit = 10_000;
     const upserted = await this.db
       .selectFrom('asset')
       .selectAll()
-      .where('asset.ownerId', 'in', dto.userIds)
+      .where('asset.ownerId', 'in', userIds)
+      .where('asset.visibility', '!=', AssetVisibility.Hidden)
       .where('asset.updatedAt', '>', updatedAfterIso)
       .orderBy('asset.updatedAt', 'asc')
       .limit(limit)
@@ -345,7 +382,7 @@ export class SyncService {
     const deleted = await this.db
       .selectFrom('asset_audit')
       .select('asset_audit.assetId')
-      .where('asset_audit.ownerId', 'in', dto.userIds)
+      .where('asset_audit.ownerId', 'in', userIds)
       .where('asset_audit.deletedAt', '>', updatedAfterIso)
       .execute();
 
@@ -492,7 +529,7 @@ export class SyncService {
         });
         count += await this.syncSimpleUpsert(stream, 'asset', SyncEntityType.AssetV1, checkpointMap, {
           ownerFilter: userId,
-          mapRow: (row: any) => this.mapSyncAsset(row),
+          mapRow: (row: any) => mapSyncAssetV1(row),
         });
         break;
 
@@ -1019,49 +1056,4 @@ export class SyncService {
     return count;
   }
 
-  private blobToBase64(value: unknown): string {
-    let bytes: Uint8Array | undefined;
-    if (value instanceof Uint8Array) {
-      bytes = value;
-    } else if (value instanceof ArrayBuffer) {
-      bytes = new Uint8Array(value);
-    } else if (Array.isArray(value)) {
-      bytes = new Uint8Array(value);
-    } else if (typeof value === 'string') {
-      return value;
-    }
-    if (!bytes || bytes.length === 0) return '';
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-  }
-
-  private mapSyncAsset(row: any) {
-    const checksum = row.checksum ? this.blobToBase64(row.checksum) : '';
-    const thumbhash = row.thumbhash ? this.blobToBase64(row.thumbhash) || null : null;
-
-    return {
-      id: row.id,
-      ownerId: row.ownerId,
-      originalFileName: row.originalFileName,
-      thumbhash,
-      checksum,
-      fileCreatedAt: row.fileCreatedAt,
-      fileModifiedAt: row.fileModifiedAt,
-      localDateTime: row.localDateTime,
-      duration: row.duration,
-      type: row.type,
-      deletedAt: row.deletedAt,
-      isFavorite: Boolean(row.isFavorite),
-      visibility: row.visibility,
-      livePhotoVideoId: row.livePhotoVideoId,
-      stackId: row.stackId,
-      libraryId: row.libraryId,
-      width: row.width,
-      height: row.height,
-      isEdited: Boolean(row.isEdited),
-    };
-  }
 }

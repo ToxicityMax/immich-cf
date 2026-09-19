@@ -21,7 +21,9 @@ export class SystemConfigService {
   }
 
   async updateSystemConfig(dto: Partial<SystemConfig>): Promise<SystemConfig> {
-    return updateConfig(this.ctx.env, dto);
+    const config = await updateConfig(this.ctx.env, dto);
+    await this.ctx.realtime.broadcast('on_config_update');
+    return config;
   }
 
   async getCustomCss(): Promise<string> {

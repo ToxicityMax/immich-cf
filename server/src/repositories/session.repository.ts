@@ -115,17 +115,18 @@ export class SessionRepository {
     await this.db.deleteFrom('session').where('id', '=', id).execute();
   }
 
-  async invalidate({
+  invalidate({
     userId,
     excludeId,
   }: {
     userId: string;
     excludeId?: string;
   }) {
-    await this.db
+    return this.db
       .deleteFrom('session')
       .where('userId', '=', userId)
       .$if(!!excludeId, (qb) => qb.where('id', '!=', excludeId!))
+      .returning('id')
       .execute();
   }
 

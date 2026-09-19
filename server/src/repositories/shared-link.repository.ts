@@ -41,6 +41,7 @@ export class SharedLinkRepository {
       .selectAll('asset')
       .where('shared_link_asset.sharedLinkId', '=', id)
       .where('asset.deletedAt', 'is', null)
+      .where('asset.visibility', '!=', 'locked')
       .orderBy('asset.fileCreatedAt', 'asc')
       .execute();
 
@@ -70,6 +71,7 @@ export class SharedLinkRepository {
           .innerJoin('album_asset', 'album_asset.assetId', 'asset.id')
           .where('album_asset.albumId', '=', link.albumId!)
           .where('asset.deletedAt', 'is', null)
+          .where('asset.visibility', '!=', 'locked')
           .orderBy('asset.fileCreatedAt', 'asc')
           .execute();
 
@@ -112,6 +114,7 @@ export class SharedLinkRepository {
           .selectAll('asset')
           .where('shared_link_asset.sharedLinkId', '=', link.id)
           .where('asset.deletedAt', 'is', null)
+          .where('asset.visibility', '!=', 'locked')
           .execute();
 
         // Get album
@@ -234,6 +237,7 @@ export class SharedLinkRepository {
       .selectAll('asset')
       .where('shared_link_asset.sharedLinkId', '=', id)
       .where('asset.deletedAt', 'is', null)
+      .where('asset.visibility', '!=', 'locked')
       .execute();
 
     return { ...link, assets };

@@ -76,6 +76,7 @@ async function validateSession(
     .select([
       'session.id',
       'session.updatedAt',
+      'session.expiresAt',
       'session.pinExpiresAt',
       'session.appVersion',
       'session.userId',
@@ -140,11 +141,10 @@ async function validateSession(
     // Extend pin expiry if within 5 minutes of expiring
     if (hasElevatedPermission && now + 5 * 60_000 > pinExpiresAt) {
       const newExpiry = new Date(now + 5 * 60_000).toISOString();
-      db.updateTable('session')
+      await db.updateTable('session')
         .set({ pinExpiresAt: newExpiry })
         .where('session.id', '=', session.id)
-        .execute()
-        .catch(() => {});
+        .execute();
     }
   }
 
@@ -160,6 +160,7 @@ async function validateSession(
     session: {
       id: session.id,
       hasElevatedPermission,
+      expiresAt: session.expiresAt,
     },
   };
 }

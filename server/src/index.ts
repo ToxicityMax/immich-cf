@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { AppEnv } from './hono';
+import type { AppContext, AppEnv } from './hono';
 import { createServiceContext } from './context';
 import { createServices } from './services';
 import { HttpException } from './utils/errors';
@@ -27,12 +27,9 @@ import viewRoutes from './routes/view';
 import authRoutes from './routes/auth';
 import sessionRoutes from './routes/sessions';
 import { handleSocketIO } from './routes/socket';
+import { authMiddleware } from './middleware/auth';
 
 const app = new Hono<AppEnv>();
-
-// Socket.IO stub — must be before other middleware (no DB/service context needed)
-app.all('/api/socket.io/*', (c) => handleSocketIO(c.req.raw));
-app.all('/api/socket.io', (c) => handleSocketIO(c.req.raw));
 
 // Global error handler
 app.onError((err, c) => {
@@ -76,6 +73,12 @@ app.use('*', async (c, next) => {
   await next();
 });
 
+// Immich uses Socket.IO over the WebSocket-only Engine.IO transport.
+const socketHandler = async (c: AppContext) =>
+  handleSocketIO(c.req.raw, c.env, c.get('auth'));
+app.all('/api/socket.io', authMiddleware(), socketHandler);
+app.all('/api/socket.io/*', authMiddleware(), socketHandler);
+
 // API routes
 app.route('/api/activities', activityRoutes);
 app.route('/api/albums', albumRoutes);
@@ -117,3 +120,5 @@ app.all('*', async (c) => {
 });
 
 export default app;
+
+export { RealtimeHub } from './realtime';

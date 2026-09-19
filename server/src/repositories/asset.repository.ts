@@ -78,7 +78,7 @@ export interface TimeBucketItem {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const CHUNK_SIZE = 500;
+const CHUNK_SIZE = 90;
 
 /** Remove undefined values from an object. */
 function removeUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
@@ -91,9 +91,9 @@ function removeUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> 
   return result;
 }
 
-/** Apply default visibility filter (not Hidden). */
+/** Apply default visibility filter. */
 function withDefaultVisibility<T extends { where: (...args: any[]) => T }>(qb: T): T {
-  return qb.where('asset.visibility', '!=', AssetVisibility.Hidden);
+  return qb.where('asset.visibility', 'in', [AssetVisibility.Archive, AssetVisibility.Timeline]);
 }
 
 // ---------------------------------------------------------------------------
@@ -670,7 +670,7 @@ export class AssetRepository {
         'tags', asset_exif.tags,
         'lockedProperties', asset_exif."lockedProperties"
       )`.as('exifInfo')])
-      .where('asset.visibility', '!=', AssetVisibility.Hidden)
+      .where('asset.visibility', 'in', [AssetVisibility.Archive, AssetVisibility.Timeline])
       .where('asset.ownerId', 'in', userIds)
       .where('asset.deletedAt', 'is', null)
       .orderBy(sql`RANDOM()`)
@@ -862,6 +862,7 @@ export class AssetRepository {
     if ('isReadOnly' in parsed) parsed.isReadOnly = Boolean(parsed.isReadOnly);
     if ('isExternal' in parsed) parsed.isExternal = Boolean(parsed.isExternal);
     if ('isOffline' in parsed) parsed.isOffline = Boolean(parsed.isOffline);
+    if ('isEdited' in parsed) parsed.isEdited = Boolean(parsed.isEdited);
 
     if ('exifInfo' in parsed) {
       parsed.exifInfo = this.parseJsonObject(parsed.exifInfo);

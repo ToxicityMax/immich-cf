@@ -27,6 +27,7 @@ import {
 } from 'src/dtos/asset-media.dto';
 import { AssetDownloadOriginalDto } from 'src/dtos/asset.dto';
 import type { AuthDto } from 'src/dtos/auth.dto';
+import { mapAsset } from 'src/dtos/asset-response.dto';
 import {
   AssetFileType,
   AssetStatus,
@@ -41,6 +42,7 @@ import { MediaRepository } from 'src/repositories/media.repository';
 import { requireAccess, requireUploadAccess } from 'src/utils/access';
 import { extname } from 'src/utils/path';
 import { mimeTypes } from 'src/utils/mime-types';
+import { mapSyncAssetExifV1, mapSyncAssetV1 } from 'src/utils/sync';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -268,6 +270,8 @@ export class AssetMediaService {
         .where('id', '=', auth.user.id)
         .execute();
 
+      await this.emitUploadEvents(auth, asset.id);
+
       return { id: asset.id, status: AssetMediaStatus.CREATED };
     } catch (error: any) {
       // Check for duplicate constraint violation
@@ -344,6 +348,8 @@ export class AssetMediaService {
       }))
       .where('id', '=', auth.user.id)
       .execute();
+
+    await this.emitAssetUpdate(auth, id);
 
     return { status: AssetMediaStatus.REPLACED, id };
   }
@@ -539,6 +545,56 @@ export class AssetMediaService {
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
+
+  private async emitUploadEvents(auth: AuthDto, id: string): Promise<void> {
+    try {
+      const asset = await this.assetRepository.getById(id, {
+        exifInfo: true,
+        owner: true,
+        stack: { assets: true },
+        edits: true,
+        tags: true,
+      });
+      if (!asset) {
+        return;
+      }
+      if (asset.visibility !== AssetVisibility.Timeline && asset.visibility !== AssetVisibility.Archive) {
+        return;
+      }
+
+      await this.ctx.realtime.sendUser(auth.user.id, 'on_upload_success', mapAsset(asset as any, { auth, withStack: true }));
+      await this.ctx.realtime.sendUser(auth.user.id, 'AssetUploadReadyV1', {
+        asset: mapSyncAssetV1(asset),
+        exif: mapSyncAssetExifV1((asset as any).exifInfo, id),
+      });
+    } catch (error) {
+      console.error(`Unable to build realtime upload event for asset ${id}:`, error);
+    }
+  }
+
+  private async emitAssetUpdate(auth: AuthDto, id: string): Promise<void> {
+    try {
+      const asset = await this.assetRepository.getById(id, {
+        exifInfo: true,
+        owner: true,
+        stack: { assets: true },
+        edits: true,
+        tags: true,
+      });
+      if (asset) {
+        const response = mapAsset(asset as any, { auth, withStack: true });
+        if (asset.visibility === AssetVisibility.Locked) {
+          if (auth.session?.hasElevatedPermission) {
+            await this.ctx.realtime.sendSession(auth.session.id, 'on_asset_update', response);
+          }
+          return;
+        }
+        await this.ctx.realtime.sendUser(asset.ownerId, 'on_asset_update', response);
+      }
+    } catch (error) {
+      console.error(`Unable to build realtime update event for asset ${id}:`, error);
+    }
+  }
 
   async getUploadAssetIdByChecksum(auth: AuthDto, checksum?: string): Promise<AssetMediaResponseDto | undefined> {
     if (!checksum) return;

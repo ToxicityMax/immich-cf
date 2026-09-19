@@ -14,6 +14,10 @@ import type {
   ChangePasswordDto,
   LoginCredentialDto,
   LogoutResponseDto,
+  PinCodeChangeDto,
+  PinCodeResetDto,
+  PinCodeSetupDto,
+  SessionUnlockDto,
   SignUpDto,
 } from 'src/dtos/auth.dto';
 import { mapLoginResponse } from 'src/dtos/auth.dto';
@@ -118,6 +122,8 @@ export class AuthService {
         .deleteFrom('session')
         .where('id', '=', auth.session.id)
         .execute();
+      await this.ctx.realtime.sendSession(auth.session.id, 'on_session_delete', auth.session.id);
+      await this.ctx.realtime.disconnectSession(auth.session.id);
     }
 
     return {
@@ -160,13 +166,18 @@ export class AuthService {
 
     // Invalidate other sessions if requested
     if (dto.invalidateSessions) {
-      await this.db
+      const invalidatedSessions = await this.db
         .deleteFrom('session')
         .where('userId', '=', userRow.id)
         .$if(!!auth.session, (qb) =>
           qb.where('id', '!=', auth.session!.id),
         )
+        .returning('id')
         .execute();
+      for (const session of invalidatedSessions) {
+        await this.ctx.realtime.sendSession(session.id, 'on_session_delete', session.id);
+        await this.ctx.realtime.disconnectSession(session.id);
+      }
     }
 
     // Return updated user
@@ -312,6 +323,80 @@ export class AuthService {
       expiresAt,
       pinExpiresAt,
     };
+  }
+
+  async setupPinCode(auth: AuthDto, dto: PinCodeSetupDto): Promise<void> {
+    const user = await this.getPinCodeUser(auth.user.id);
+    if (!user) {
+      throw new AuthError(401, 'Unauthorized');
+    }
+
+    if (user.pinCode) {
+      throw new AuthError(400, 'User already has a PIN code');
+    }
+
+    const pinCode = await this.crypto.hashBcrypt(dto.pinCode, SALT_ROUNDS);
+    await this.db
+      .updateTable('user')
+      .set({ pinCode })
+      .where('id', '=', auth.user.id)
+      .execute();
+  }
+
+  async changePinCode(auth: AuthDto, dto: PinCodeChangeDto): Promise<void> {
+    const user = await this.getPinCodeUser(auth.user.id);
+    this.validatePinCode(user, dto);
+
+    const pinCode = await this.crypto.hashBcrypt(dto.newPinCode, SALT_ROUNDS);
+    await this.db
+      .updateTable('user')
+      .set({ pinCode })
+      .where('id', '=', auth.user.id)
+      .execute();
+  }
+
+  async resetPinCode(auth: AuthDto, dto: PinCodeResetDto): Promise<void> {
+    const user = await this.getPinCodeUser(auth.user.id);
+    this.validatePinCode(user, dto);
+
+    await this.db
+      .updateTable('user')
+      .set({ pinCode: null })
+      .where('id', '=', auth.user.id)
+      .execute();
+    await this.db
+      .updateTable('session')
+      .set({ pinExpiresAt: null })
+      .where('userId', '=', auth.user.id)
+      .execute();
+  }
+
+  async unlockSession(auth: AuthDto, dto: SessionUnlockDto): Promise<void> {
+    if (!auth.session) {
+      throw new AuthError(400, 'This endpoint can only be used with a session token');
+    }
+
+    const user = await this.getPinCodeUser(auth.user.id);
+    // Immich unlocks sessions with the PIN only; password is for changing or resetting it.
+    this.validatePinCode(user, { pinCode: dto.pinCode });
+
+    await this.db
+      .updateTable('session')
+      .set({ pinExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString() })
+      .where('id', '=', auth.session.id)
+      .execute();
+  }
+
+  async lockSession(auth: AuthDto): Promise<void> {
+    if (!auth.session) {
+      throw new AuthError(400, 'This endpoint can only be used with a session token');
+    }
+
+    await this.db
+      .updateTable('session')
+      .set({ pinExpiresAt: null })
+      .where('id', '=', auth.session.id)
+      .execute();
   }
 
   getMobileRedirect(url: string) {
@@ -519,6 +604,36 @@ export class AuthService {
     return this.crypto.compareBcrypt(inputSecret, existingHash);
   }
 
+  private getPinCodeUser(userId: string) {
+    return this.db
+      .selectFrom('user')
+      .select(['pinCode', 'password'])
+      .where('id', '=', userId)
+      .where('deletedAt', 'is', null)
+      .executeTakeFirst();
+  }
+
+  private validatePinCode(
+    user: { pinCode: string | null; password: string | null } | undefined,
+    dto: { pinCode?: string; password?: string },
+  ): void {
+    if (!user?.pinCode) {
+      throw new AuthError(400, 'User does not have a PIN code');
+    }
+
+    if (dto.password) {
+      if (!this.validateSecret(dto.password, user.password)) {
+        throw new AuthError(400, 'Wrong password');
+      }
+    } else if (dto.pinCode) {
+      if (!this.validateSecret(dto.pinCode, user.pinCode)) {
+        throw new AuthError(400, 'Wrong PIN code');
+      }
+    } else {
+      throw new AuthError(400, 'Either password or pinCode is required');
+    }
+  }
+
   private async validateSession(
     tokenValue: string,
     headers: Headers,
@@ -530,6 +645,7 @@ export class AuthService {
       .select([
         'session.id',
         'session.updatedAt',
+        'session.expiresAt',
         'session.pinExpiresAt',
         'session.appVersion',
         'session.userId',
@@ -580,12 +696,11 @@ export class AuthService {
 
       if (hasElevatedPermission && now + 5 * 60_000 > pinExpiresAt) {
         const newExpiry = new Date(now + 5 * 60_000).toISOString();
-        this.db
+        await this.db
           .updateTable('session')
           .set({ pinExpiresAt: newExpiry })
           .where('session.id', '=', session.id)
-          .execute()
-          .catch(() => {});
+          .execute();
       }
     }
 
@@ -594,6 +709,7 @@ export class AuthService {
       session: {
         id: session.id,
         hasElevatedPermission,
+        expiresAt: session.expiresAt,
       },
     };
   }
