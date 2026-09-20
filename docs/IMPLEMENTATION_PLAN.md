@@ -1,5 +1,7 @@
 # Immich Cloudflare Workers Conversion: Implementation Plan
 
+> Historical design document. For current implementation status and remaining work, see [FEATURE_STATUS.md](FEATURE_STATUS.md).
+
 This document is the step-by-step implementation guide for converting the Immich photo hosting server from NestJS/PostgreSQL/Node.js to Cloudflare Workers with Hono/D1/KV/R2. It references actual file paths, function names, and specific conversion strategies.
 
 ---

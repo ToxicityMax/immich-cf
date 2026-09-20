@@ -1,5 +1,7 @@
 # Immich Server: Cloudflare Workers Conversion - Technology Analysis
 
+> Historical conversion analysis. For the active architecture and current limitations, see [FEATURE_STATUS.md](FEATURE_STATUS.md) and [COMPATIBILITY.md](COMPATIBILITY.md).
+
 This document catalogs every technology conversion required to port the Immich server (`server/`) from its current NestJS/PostgreSQL/Node.js stack to Cloudflare Workers with Hono/D1/KV/R2.
 
 ---

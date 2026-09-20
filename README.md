@@ -17,15 +17,14 @@ This project is a fork of [Immich](https://github.com/immich-app/immich) that re
 
 ## What works
 
-- Photo upload, browsing, and download
-- Album management
-- User authentication (password + API key)
-- Mobile app sync protocol
-- Authenticated real-time updates for web and mobile clients
-- Shared links
-- Timeline and memories
-- Search
-- Tags and activities
+- Password, API-key, session, and PIN authentication
+- Basic JPEG upload, duplicate detection, metadata updates, and original download
+- Core album and user management
+- Locked-folder access controls
+- Authenticated realtime asset and session updates
+- Basic shared links, timeline, memories, tags, activities, stacks, and sync routes
+
+Several items in the last line are partial and are not yet drop-in compatible with every upstream web or mobile workflow. Media derivatives, video, mobile sync convergence, shared-link passwords, background processing, and parts of the preserved admin UI still need work.
 
 ## What was intentionally removed
 
@@ -41,7 +40,7 @@ This project is a fork of [Immich](https://github.com/immich-app/immich) that re
 ```
 server/          Cloudflare Workers backend (Hono)
   src/
-    controllers/ API endpoint handlers
+    controllers/ Retained upstream/reference controllers (not active Worker handlers)
     services/    Business logic
     repositories/ Data access layer
     routes/      Hono route definitions
@@ -57,7 +56,16 @@ web/             SvelteKit frontend (SPA)
     lib/         Components, stores, utilities
 
 i18n/            Internationalization (80+ languages)
+docs/            Compatibility, feature status, and roadmap
 ```
+
+## Documentation
+
+- [Compatibility policy and test expectations](docs/COMPATIBILITY.md)
+- [Feature status and remaining roadmap](docs/FEATURE_STATUS.md)
+- [Contributor and coding-agent guidance](AGENTS.md)
+- [Original conversion plan](docs/IMPLEMENTATION_PLAN.md), retained as historical context
+- [Technology conversion analysis](docs/TECH_CONVERSIONS.md), retained as historical context
 
 ## Development
 
@@ -83,7 +91,7 @@ npm run dev    # starts vite dev on 0.0.0.0:3000
 The server is deployed to Cloudflare Workers via `wrangler deploy`. The web frontend is built as a static SPA and served through the Workers assets binding. Required Cloudflare resources:
 
 - **D1 database** for structured data
-- **R2 bucket** (`immich-media`) for photo/video storage
+- **R2 bucket** (`immich`) for photo/video storage
 - **KV namespace** for caching
 - **Durable Object namespace** for authenticated WebSocket connections and event delivery
 
