@@ -1,0 +1,19 @@
+server/package-lock.json
+  s_c82a8e92a94b8d::t_e44b8a5da58d7a 41,45-47,51,88-132,219-221,239-241,702-704,757-793,1168-1204,2433-2435,2944-2946,2950-2951,2953-2954,2957,2960,2965,2968,2971,2979-4192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a9cbe3251ae936d1d37de2e77be85ba49d0e9fc7",
+  "prompts": {},
+  "sessions": {
+    "s_c82a8e92a94b8d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f1d970a2fffe1mnIJVJk4zDKw4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kpsingh <kpsingh@cloudflare.com>"
+    }
+  }
+}
