@@ -121,6 +121,53 @@ describe('Trash', () => {
     }
   });
 
+  it('force deletes every R2 object and the asset row immediately', async () => {
+    const { token, userId } = await createTestAdmin();
+    const assetId = await uploadTestAsset(token, crypto.randomUUID());
+    const asset = await env.DB.prepare(`
+      SELECT originalPath FROM asset WHERE id = ?
+    `).bind(assetId).first<{ originalPath: string }>();
+    const encodedVideoPath = `assets/${userId}/${assetId}/encoded-video.mp4`;
+    const orphanedPath = `assets/${userId}/${assetId}/orphaned-derivative.webp`;
+    await env.BUCKET.put(encodedVideoPath, new Uint8Array([1, 2, 3]));
+    await env.BUCKET.put(orphanedPath, new Uint8Array([4, 5, 6]));
+    await env.DB.prepare('UPDATE asset SET encodedVideoPath = ? WHERE id = ?').bind(encodedVideoPath, assetId).run();
+    const { results: assetFiles } = await env.DB.prepare(
+      'SELECT path FROM asset_file WHERE assetId = ?',
+    ).bind(assetId).all<{ path: string }>();
+    const quotaBefore = await getQuota(userId);
+
+    const response = await authRequest('/api/assets', token, {
+      method: 'DELETE',
+      ...json({ ids: [assetId], force: true }),
+    });
+    expect(response.status).toBe(204);
+    expect(await env.DB.prepare('SELECT id FROM asset WHERE id = ?').bind(assetId).first()).toBeNull();
+    expect(await getQuota(userId)).toBeLessThan(quotaBefore);
+    for (const path of [asset!.originalPath, encodedVideoPath, orphanedPath, ...assetFiles.map(({ path }) => path)]) {
+      expect(await env.BUCKET.head(path)).toBeNull();
+    }
+  });
+
+  it('does not change a stack primary when force deleting a secondary asset', async () => {
+    const { token } = await createTestAdmin();
+    const primaryId = await uploadTestAsset(token, `force-primary-${crypto.randomUUID()}`);
+    const secondaryId = await uploadTestAsset(token, `force-secondary-${crypto.randomUUID()}`);
+    const stackResponse = await authRequest('/api/stacks', token, {
+      method: 'POST',
+      ...json({ assetIds: [primaryId, secondaryId] }),
+    });
+    expect(stackResponse.status).toBe(201);
+    const stack = (await stackResponse.json()) as { id: string; primaryAssetId: string };
+
+    expect((await authRequest('/api/assets', token, {
+      method: 'DELETE',
+      ...json({ ids: [secondaryId], force: true }),
+    })).status).toBe(204);
+    expect(await env.DB.prepare('SELECT primaryAssetId FROM stack WHERE id = ?').bind(stack.id).first())
+      .toEqual({ primaryAssetId: stack.primaryAssetId });
+  });
+
   it('leaves database rows and quota unchanged when R2 deletion fails', async () => {
     const { token, userId } = await createTestAdmin();
     const assetId = await uploadTestAsset(token, crypto.randomUUID());
@@ -133,7 +180,10 @@ describe('Trash', () => {
     const deleteObject = vi.fn().mockRejectedValue(new Error('injected R2 failure'));
     const service = new TrashService({
       ...context,
-      bucket: { delete: deleteObject } as unknown as R2Bucket,
+      bucket: {
+        delete: deleteObject,
+        list: vi.fn().mockResolvedValue({ objects: [], truncated: false }),
+      } as unknown as R2Bucket,
       realtime: { sendUser: vi.fn() } as any,
     });
 

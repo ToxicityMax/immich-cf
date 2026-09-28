@@ -30,6 +30,7 @@ import { AlbumRepository } from 'src/repositories/album.repository';
 import { SharedLinkAssetRepository } from 'src/repositories/shared-link-asset.repository';
 import { requireAccess, requireElevatedPermission } from 'src/utils/access';
 import { generateUUIDv7 } from 'src/utils/uuid';
+import { TrashService } from 'src/services/trash.service';
 
 // ---------------------------------------------------------------------------
 // Helper: omit undefined values from an object
@@ -279,16 +280,13 @@ export class AssetService {
       ids,
     });
 
-    await this.assetRepository.updateAll(ids, {
-      deletedAt: new Date().toISOString(),
-      status: force ? AssetStatus.Deleted : AssetStatus.Trashed,
-    });
-
     if (force) {
-      for (const id of ids) {
-        await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_delete', id);
-      }
+      await new TrashService(this.ctx).delete(auth, ids);
     } else {
+      await this.assetRepository.updateAll(ids, {
+        deletedAt: new Date().toISOString(),
+        status: AssetStatus.Trashed,
+      });
       await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_trash', ids);
     }
   }
