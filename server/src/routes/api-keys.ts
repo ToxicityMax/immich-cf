@@ -9,8 +9,34 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
 import { Permission } from '../enum';
+import { APIKeyCreateSchema, APIKeyUpdateSchema } from '../dtos/api-key.dto';
+import { UUIDParamSchema } from '../validation';
+import { BadRequestException } from '../utils/errors';
 
 const app = new Hono<AppEnv>();
+
+async function parseBody(request: { json(): Promise<unknown> }, schema: typeof APIKeyCreateSchema | typeof APIKeyUpdateSchema) {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    throw new BadRequestException('Invalid request body');
+  }
+
+  const result = schema.safeParse(body);
+  if (!result.success) {
+    throw new BadRequestException(result.error.issues[0]?.message || 'Invalid request body');
+  }
+  return result.data;
+}
+
+function parseId(id: string) {
+  const result = UUIDParamSchema.safeParse({ id });
+  if (!result.success) {
+    throw new BadRequestException(result.error.issues[0]?.message || 'Invalid UUID');
+  }
+  return result.data.id;
+}
 
 // POST /api/api-keys -- Create API key
 app.post(
@@ -19,7 +45,7 @@ app.post(
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = await parseBody(c.req, APIKeyCreateSchema);
     const result = await services.apiKey.create(auth, body);
     return c.json(result, 201);
   },
@@ -40,7 +66,7 @@ app.get(
 // GET /api/api-keys/me -- Get current key info
 app.get(
   '/me',
-  authMiddleware({ permission: Permission.ApiKeyRead }),
+  authMiddleware({ permission: false }),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -56,7 +82,7 @@ app.get(
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const id = c.req.param('id');
+    const id = parseId(c.req.param('id'));
     const result = await services.apiKey.getById(auth, id);
     return c.json(result);
   },
@@ -69,9 +95,22 @@ app.put(
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const id = c.req.param('id');
-    const body = await c.req.json();
+    const id = parseId(c.req.param('id'));
+    const body = await parseBody(c.req, APIKeyUpdateSchema);
     const result = await services.apiKey.update(auth, id, body);
+    return c.json(result);
+  },
+);
+
+// POST /api/api-keys/:id/rotate -- Replace the secret in place
+app.post(
+  '/:id/rotate',
+  authMiddleware({ permission: Permission.ApiKeyRotate }),
+  async (c) => {
+    const auth = c.get('auth');
+    const services = c.get('services');
+    const id = parseId(c.req.param('id'));
+    const result = await services.apiKey.rotate(auth, id);
     return c.json(result);
   },
 );
@@ -83,7 +122,7 @@ app.delete(
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const id = c.req.param('id');
+    const id = parseId(c.req.param('id'));
     await services.apiKey.delete(auth, id);
     return c.body(null, 204);
   },

@@ -32,6 +32,7 @@ import {
 import type { ServiceContext } from 'src/context';
 import { isGranted } from 'src/utils/access';
 import { getUserAgentDetails } from 'src/utils/request';
+import { generateUUIDv7 } from 'src/utils/uuid';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -238,7 +239,8 @@ export class AuthService {
         oauthId: '',
         status: 'active',
         profileChangedAt: now,
-        updateId: this.crypto.randomUUID(),
+        clusterGroupId: id,
+        updateId: generateUUIDv7(),
       })
       .execute();
 
@@ -366,7 +368,7 @@ export class AuthService {
       .execute();
     await this.db
       .updateTable('session')
-      .set({ pinExpiresAt: null })
+      .set({ pinExpiresAt: null, isPendingSyncReset: true })
       .where('userId', '=', auth.user.id)
       .execute();
   }
@@ -382,7 +384,10 @@ export class AuthService {
 
     await this.db
       .updateTable('session')
-      .set({ pinExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString() })
+      .set({
+        pinExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+        isPendingSyncReset: true,
+      })
       .where('id', '=', auth.session.id)
       .execute();
   }
@@ -394,7 +399,7 @@ export class AuthService {
 
     await this.db
       .updateTable('session')
-      .set({ pinExpiresAt: null })
+      .set({ pinExpiresAt: null, isPendingSyncReset: true })
       .where('id', '=', auth.session.id)
       .execute();
   }
@@ -701,6 +706,12 @@ export class AuthService {
           .set({ pinExpiresAt: newExpiry })
           .where('session.id', '=', session.id)
           .execute();
+      } else if (!hasElevatedPermission) {
+        await this.db
+          .updateTable('session')
+          .set({ pinExpiresAt: null, isPendingSyncReset: true })
+          .where('session.id', '=', session.id)
+          .execute();
       }
     }
 
@@ -761,7 +772,7 @@ export class AuthService {
         userId: user.id,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        updateId: this.crypto.randomUUID(),
+        updateId: generateUUIDv7(),
       })
       .execute();
 

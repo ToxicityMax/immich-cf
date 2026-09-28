@@ -29,12 +29,7 @@ describe('Server Info', () => {
       expect(res.status).toBe(200);
 
       const body = await res.json() as any;
-      expect(body).toHaveProperty('major');
-      expect(body).toHaveProperty('minor');
-      expect(body).toHaveProperty('patch');
-      expect(typeof body.major).toBe('number');
-      expect(typeof body.minor).toBe('number');
-      expect(typeof body.patch).toBe('number');
+      expect(body).toEqual({ major: 3, minor: 2, patch: 2, prerelease: null });
     });
   });
 
@@ -47,16 +42,9 @@ describe('Server Info', () => {
       expect(res.status).toBe(200);
 
       const body = await res.json() as any;
-      // Feature flags should be an object with boolean values
-      expect(typeof body).toBe('object');
-      expect(body).not.toBeNull();
-      // Check for common feature flag keys
-      if ('smartSearch' in body) {
-        expect(typeof body.smartSearch).toBe('boolean');
-      }
-      if ('trash' in body) {
-        expect(typeof body.trash).toBe('boolean');
-      }
+      expect(body.realtimeTranscoding).toBe(false);
+      expect(body.search).toBe(false);
+      expect(body.smartSearch).toBe(false);
     });
   });
 
@@ -71,6 +59,19 @@ describe('Server Info', () => {
       const body = await res.json() as any;
       expect(typeof body).toBe('object');
       expect(body).not.toBeNull();
+    });
+  });
+
+  describe('GET /api/public/config', () => {
+    it('should return the unauthenticated v3 public config', async () => {
+      const res = await request('/api/public/config');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        oauth: { autoLaunch: false, buttonText: 'Login with OAuth', enabled: false },
+        passwordLogin: { enabled: true },
+        server: { loginPageMessage: '' },
+        theme: { customCss: '' },
+      });
     });
   });
 
@@ -109,17 +110,20 @@ describe('Server Info', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // Theme
-  // -------------------------------------------------------------------------
   describe('GET /api/server/theme', () => {
-    it('should return theme config', async () => {
+    it('should not expose the removed v2 theme endpoint', async () => {
       const res = await request('/api/server/theme');
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
+      expect(res.headers.get('content-type')).toContain('application/json');
+    });
+  });
 
-      const body = await res.json() as any;
-      expect(typeof body).toBe('object');
-      expect(body).not.toBeNull();
+  describe('GET /api/unknown', () => {
+    it('should return an API 404 instead of the SPA fallback', async () => {
+      const res = await request('/api/unknown');
+      expect(res.status).toBe(404);
+      expect(res.headers.get('content-type')).toContain('application/json');
+      expect(await res.json()).toEqual({ message: 'Not Found', statusCode: 404 });
     });
   });
 

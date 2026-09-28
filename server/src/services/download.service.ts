@@ -6,8 +6,9 @@
  */
 
 import { Zip, ZipPassThrough } from 'fflate';
+import sanitize from 'sanitize-filename';
 import type { AuthDto } from 'src/dtos/auth.dto';
-import type { DownloadInfoDto, DownloadResponseDto, DownloadArchiveInfo } from 'src/dtos/download.dto';
+import type { DownloadInfoDto, DownloadResponseDto, DownloadArchiveInfo, DownloadArchiveDto } from 'src/dtos/download.dto';
 import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
 import { requireAccess } from 'src/utils/access';
@@ -15,6 +16,7 @@ import { Permission } from 'src/enum';
 import { BadRequestException } from 'src/utils/errors';
 
 const GiB = 1024 * 1024 * 1024;
+const QUERY_CHUNK_SIZE = 90;
 
 export class DownloadService {
   private accessRepository: AccessRepository;
@@ -34,19 +36,24 @@ export class DownloadService {
   async getDownloadInfo(auth: AuthDto, dto: DownloadInfoDto): Promise<DownloadResponseDto> {
     let assets: Array<{ id: string; fileSizeInByte: number | null; livePhotoVideoId: string | null }>;
 
-    if (dto.assetIds && dto.assetIds.length > 0) {
+    if (dto.assetIds) {
       await requireAccess(this.accessRepository, {
         auth,
         permission: Permission.AssetDownload,
         ids: dto.assetIds,
       });
 
-      assets = await this.db
-        .selectFrom('asset')
-        .innerJoin('asset_exif', 'asset_exif.assetId', 'asset.id')
-        .select(['asset.id', 'asset_exif.fileSizeInByte', 'asset.livePhotoVideoId'])
-        .where('asset.id', 'in', dto.assetIds)
-        .execute();
+      assets = [];
+      for (let i = 0; i < dto.assetIds.length; i += QUERY_CHUNK_SIZE) {
+        assets.push(
+          ...await this.db
+            .selectFrom('asset')
+            .innerJoin('asset_exif', 'asset_exif.assetId', 'asset.id')
+            .select(['asset.id', 'asset_exif.fileSizeInByte', 'asset.livePhotoVideoId'])
+            .where('asset.id', 'in', dto.assetIds.slice(i, i + QUERY_CHUNK_SIZE))
+            .execute(),
+        );
+      }
     } else if (dto.albumId) {
       await requireAccess(this.accessRepository, {
         auth,
@@ -109,18 +116,25 @@ export class DownloadService {
    * Download a ZIP archive of assets using fflate streaming.
    * Returns a Response with a streaming body.
    */
-  async downloadArchive(auth: AuthDto, dto: { assetIds: string[] }): Promise<Response> {
+  async downloadArchive(auth: AuthDto, dto: DownloadArchiveDto): Promise<Response> {
     await requireAccess(this.accessRepository, {
       auth,
       permission: Permission.AssetDownload,
       ids: dto.assetIds,
     });
 
-    const assets = await this.db
-      .selectFrom('asset')
-      .select(['asset.id', 'asset.originalPath', 'asset.originalFileName'])
-      .where('asset.id', 'in', dto.assetIds)
-      .execute();
+    const assetRows: Array<{ id: string; originalPath: string; originalFileName: string }> = [];
+    for (let i = 0; i < dto.assetIds.length; i += QUERY_CHUNK_SIZE) {
+      assetRows.push(
+        ...await this.db
+          .selectFrom('asset')
+          .select(['asset.id', 'asset.originalPath', 'asset.originalFileName'])
+          .where('asset.id', 'in', dto.assetIds.slice(i, i + QUERY_CHUNK_SIZE))
+          .execute(),
+      );
+    }
+    const assetMap = new Map(assetRows.map((asset) => [asset.id, asset]));
+    const assets = dto.assetIds.flatMap((id) => assetMap.get(id) || []);
 
     // Create a streaming ZIP using fflate
     const { readable, writable } = new TransformStream<Uint8Array>();
@@ -149,7 +163,7 @@ export class DownloadService {
         }
 
         // Handle duplicate filenames
-        let filename = asset.originalFileName;
+        let filename = sanitize(asset.originalFileName) || 'unnamed';
         const count = paths[filename] || 0;
         paths[filename] = count + 1;
         if (count !== 0) {
@@ -185,10 +199,14 @@ export class DownloadService {
       writer.abort(err).catch(() => {});
     });
 
+    const archiveName = dto.archiveName ? sanitize(dto.archiveName) : '';
+    const disposition = archiveName
+      ? `attachment; filename*=UTF-8''${encodeURIComponent(archiveName)}.zip`
+      : 'attachment; filename="immich-download.zip"';
     return new Response(readable, {
       headers: {
         'Content-Type': 'application/zip',
-        'Content-Disposition': 'attachment; filename="immich-download.zip"',
+        'Content-Disposition': disposition,
       },
     });
   }

@@ -169,7 +169,7 @@ async function completeHandshake(socket: TestSocket): Promise<void> {
   expect(JSON.parse(connectPacket.slice(2))).toHaveProperty('sid');
 
   const versionEvent = await socket.nextEvent('on_server_version');
-  expect(versionEvent.args).toEqual([{ major: 2, minor: 5, patch: 2 }]);
+  expect(versionEvent.args).toEqual([{ major: 3, minor: 2, patch: 2, prerelease: null }]);
 }
 
 async function createUserAndLogin(adminToken: string): Promise<{ token: string; userId: string }> {
@@ -243,8 +243,6 @@ describe('Socket.IO realtime compatibility', () => {
     const image = createTestImage();
     const formData = new FormData();
     formData.append('assetData', new File([image], 'socket-upload.jpg', { type: 'image/jpeg' }));
-    formData.append('deviceAssetId', 'socket-upload-1');
-    formData.append('deviceId', 'socket-test');
     formData.append('fileCreatedAt', '2026-01-02T03:04:05.000Z');
     formData.append('fileModifiedAt', '2026-01-02T03:04:05.000Z');
 
@@ -256,17 +254,39 @@ describe('Socket.IO realtime compatibility', () => {
     expect(legacyUpload.args[0]).toMatchObject({ id: upload.id, ownerId: admin.userId });
     expect(typeof (legacyUpload.args[0] as { isEdited: unknown }).isEdited).toBe('boolean');
 
-    const syncUpload = await ownerSocket.nextEvent('AssetUploadReadyV1');
+    const syncUpload = await ownerSocket.nextEvent('AssetUploadReadyV2');
     expect(syncUpload.args[0]).toMatchObject({
       asset: {
         id: upload.id,
         ownerId: admin.userId,
         originalFileName: 'socket-upload.jpg',
         fileCreatedAt: '2026-01-02T03:04:05.000Z',
+        createdAt: expect.any(String),
+        duration: null,
       },
       exif: { assetId: upload.id },
     });
+    expect(await ownerSocket.hasEvent('AssetUploadReadyV1')).toBe(false);
     expect(await otherSocket.hasEvent('on_upload_success')).toBe(false);
+
+    const albumResponse = await authRequest('/api/albums', admin.token, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        albumName: 'Realtime album',
+        albumUsers: [{ userId: otherUser.userId, role: 'viewer' }],
+      }),
+    });
+    expect(albumResponse.status).toBe(200);
+    const album = (await albumResponse.json()) as { id: string };
+    const addResponse = await authRequest(`/api/albums/${album.id}/assets`, admin.token, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [upload.id] }),
+    });
+    expect(addResponse.status).toBe(200);
+    expect((await ownerSocket.nextEvent('on_album_update')).args).toEqual([album.id]);
+    expect((await otherSocket.nextEvent('on_album_update')).args).toEqual([album.id]);
 
     const updateResponse = await authRequest(`/api/assets/${upload.id}`, admin.token, {
       method: 'PUT',

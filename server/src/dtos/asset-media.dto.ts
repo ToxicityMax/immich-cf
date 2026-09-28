@@ -24,11 +24,9 @@ export const AssetMediaOptionsSchema = z.object({
 export type AssetMediaOptionsDto = z.infer<typeof AssetMediaOptionsSchema>;
 
 export const AssetMediaBaseSchema = z.object({
-  deviceAssetId: z.string().min(1),
-  deviceId: z.string().min(1),
   fileCreatedAt: z.coerce.date(),
   fileModifiedAt: z.coerce.date(),
-  duration: z.string().optional(),
+  duration: z.coerce.number().int().min(0).optional(),
   filename: z.string().optional(),
 });
 
@@ -69,9 +67,3 @@ export const AssetBulkUploadCheckSchema = z.object({
   assets: z.array(AssetBulkUploadCheckItemSchema).min(1),
 });
 export type AssetBulkUploadCheckDto = z.infer<typeof AssetBulkUploadCheckSchema>;
-
-export const CheckExistingAssetsSchema = z.object({
-  deviceAssetIds: z.array(z.string().min(1)).min(1),
-  deviceId: z.string().min(1),
-});
-export type CheckExistingAssetsDto = z.infer<typeof CheckExistingAssetsSchema>;

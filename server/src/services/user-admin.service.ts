@@ -17,6 +17,7 @@ import { AssetRepository } from 'src/repositories/asset.repository';
 import { AlbumRepository } from 'src/repositories/album.repository';
 import { BadRequestException, NotFoundException, ForbiddenException } from 'src/utils/errors';
 import { getPreferences, mergePreferences } from 'src/utils/preferences';
+import { generateUUIDv7 } from 'src/utils/uuid';
 
 export class UserAdminService {
   private userRepository: UserRepository;
@@ -59,8 +60,9 @@ export class UserAdminService {
     }
 
     const now = new Date().toISOString();
+    const id = this.ctx.crypto.randomUUID();
     const payload: any = {
-      id: this.ctx.crypto.randomUUID(),
+      id,
       email: userDto.email,
       name: userDto.name || '',
       isAdmin: userDto.isAdmin ? 1 : 0,
@@ -75,7 +77,8 @@ export class UserAdminService {
       oauthId: '',
       quotaUsageInBytes: 0,
       profileChangedAt: now,
-      updateId: this.ctx.crypto.randomUUID(),
+      clusterGroupId: id,
+      updateId: generateUUIDv7(),
     };
     if (userDto.password) {
       payload.password = await this.ctx.crypto.hashBcrypt(userDto.password, 10);

@@ -29,6 +29,7 @@ import { AccessRepository } from 'src/repositories/access.repository';
 import { AlbumRepository } from 'src/repositories/album.repository';
 import { SharedLinkAssetRepository } from 'src/repositories/shared-link-asset.repository';
 import { requireAccess, requireElevatedPermission } from 'src/utils/access';
+import { generateUUIDv7 } from 'src/utils/uuid';
 
 // ---------------------------------------------------------------------------
 // Helper: omit undefined values from an object
@@ -62,7 +63,7 @@ export class AssetService {
     this.assetRepository = new AssetRepository(ctx.db);
     this.accessRepository = new AccessRepository(ctx.db);
     this.albumRepository = new AlbumRepository(ctx.db);
-    this.sharedLinkAssetRepository = new SharedLinkAssetRepository(ctx.db);
+    this.sharedLinkAssetRepository = new SharedLinkAssetRepository(ctx.db, ctx.env.DB);
   }
 
   async getStatistics(auth: AuthDto, dto: AssetStatsDto) {
@@ -465,20 +466,7 @@ export class AssetService {
       }
     }
 
-    // Replace all edits in a transaction
-    await this.db.transaction().execute(async (tx) => {
-      await tx.deleteFrom('asset_edit').where('assetId', '=', id).execute();
-      for (let i = 0; i < dto.edits.length; i++) {
-        const edit = dto.edits[i];
-        await tx.insertInto('asset_edit').values({
-          id: crypto.randomUUID(),
-          assetId: id,
-          action: edit.action,
-          parameters: JSON.stringify(edit.parameters),
-          sequence: i,
-        }).execute();
-      }
-    });
+    await this.replaceAssetEdits(id, dto.edits);
 
     return {
       assetId: id,
@@ -498,12 +486,59 @@ export class AssetService {
       throw new Error('Asset not found');
     }
 
-    await this.db.deleteFrom('asset_edit').where('assetId', '=', id).execute();
+    await this.replaceAssetEdits(id, []);
   }
 
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  private async replaceAssetEdits(id: string, edits: AssetEditActionListDto['edits']): Promise<void> {
+    const [editedFiles, oldEdits, asset] = await Promise.all([
+      this.db
+        .selectFrom('asset_file')
+        .select('path')
+        .where('assetId', '=', id)
+        .where('isEdited', '=', 1)
+        .execute(),
+      this.db.selectFrom('asset_edit').select('updateId').where('assetId', '=', id).execute(),
+      this.db.selectFrom('asset').select('updateId').where('id', '=', id).executeTakeFirstOrThrow(),
+    ]);
+    const now = new Date().toISOString();
+    const cursorTimestamp = (cursor: string) => Number.parseInt(cursor.replaceAll('-', '').slice(0, 12), 16);
+    const editTimestamp = Math.max(Date.now(), ...oldEdits.map(({ updateId }) => cursorTimestamp(updateId) + 1));
+    const assetTimestamp = Math.max(Date.now(), cursorTimestamp(asset.updateId) + 1);
+    const statements = [
+      this.ctx.env.DB.prepare('DELETE FROM asset_edit WHERE assetId = ?').bind(id),
+      this.ctx.env.DB.prepare('DELETE FROM asset_file WHERE assetId = ? AND isEdited = 1').bind(id),
+      ...edits.map((edit, sequence) => this.ctx.env.DB.prepare(`
+        INSERT INTO asset_edit (id, assetId, action, parameters, sequence, updatedAt, updateId)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        crypto.randomUUID(),
+        id,
+        edit.action,
+        JSON.stringify(edit.parameters),
+        sequence,
+        now,
+        generateUUIDv7(editTimestamp),
+      )),
+      this.ctx.env.DB.prepare(`
+        UPDATE asset SET isEdited = ?, updatedAt = ?, updateId = ? WHERE id = ?
+      `).bind(edits.length > 0 ? 1 : 0, now, generateUUIDv7(assetTimestamp), id),
+    ];
+
+    await this.ctx.env.DB.batch(statements);
+
+    if (editedFiles.length > 0) {
+      try {
+        // R2 cannot join the D1 transaction. Deleting after commit can only leave unreferenced objects on failure.
+        await this.ctx.bucket.delete(editedFiles.map(({ path }) => path));
+      } catch (error) {
+        console.error(`Unable to delete edited files for asset ${id}:`, error);
+      }
+    }
+  }
 
   private async getRealtimeAsset(id: string) {
     return this.assetRepository.getById(id, {

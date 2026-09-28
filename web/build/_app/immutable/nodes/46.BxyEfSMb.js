@@ -1,1 +1,0 @@
-import{r as e,R as o}from"../chunks/gegweU97.js";const r=(()=>e(307,o.queues())),a=Object.freeze(Object.defineProperty({__proto__:null,load:r},Symbol.toStringTag,{value:"Module"}));export{a as universal};

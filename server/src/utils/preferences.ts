@@ -44,10 +44,12 @@ const getDefaultPreferences = (): UserPreferences => {
     memories: {
       enabled: true,
       duration: 5,
+      sidebarWeb: false,
     },
     people: {
       enabled: true,
       sidebarWeb: false,
+      minimumFaces: 3,
     },
     sharedLinks: {
       enabled: true,
@@ -75,6 +77,9 @@ const getDefaultPreferences = (): UserPreferences => {
     },
     cast: {
       gCastEnabled: false,
+    },
+    recentlyAdded: {
+      sidebarWeb: false,
     },
   };
 };

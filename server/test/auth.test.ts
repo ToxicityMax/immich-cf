@@ -1,4 +1,6 @@
+import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeAll } from 'vitest';
+import { getDefaults, updateConfig } from '../src/config';
 import { request, authRequest, apiKeyRequest, setupDatabase } from './helpers';
 
 describe('Auth', () => {
@@ -65,6 +67,16 @@ describe('Auth', () => {
       // Should fail because an admin already exists
       expect(res.status).toBeGreaterThanOrEqual(400);
     });
+
+    it('should allow bootstrap signup when password login is disabled', async () => {
+      const config = getDefaults();
+      config.passwordLogin.enabled = false;
+      await updateConfig(env, config);
+
+      const res = await signUpAdmin();
+
+      expect(res.status).toBe(201);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -99,6 +111,46 @@ describe('Auth', () => {
       const res = await login('nobody@test.com', 'password123');
 
       expect(res.status).toBe(401);
+    });
+
+    it('should disable and re-enable password login without affecting other authentication', async () => {
+      await signUpAdmin();
+      const initialLogin = await login();
+      const { accessToken } = (await initialLogin.json()) as any;
+      const apiKey = await createApiKey(accessToken, ['userConfig.read']);
+
+      const configResponse = await authRequest('/api/admin/config', accessToken);
+      const config = (await configResponse.json()) as any;
+      config.passwordLogin.enabled = false;
+      const disableResponse = await authRequest('/api/admin/config', accessToken, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      expect(disableResponse.status).toBe(200);
+
+      const sessionsBefore = await env.DB.prepare('SELECT COUNT(*) AS count FROM session').first<number>('count');
+      const disabledLogin = await login();
+      const sessionsAfter = await env.DB.prepare('SELECT COUNT(*) AS count FROM session').first<number>('count');
+
+      expect(disabledLogin.status).toBe(401);
+      expect(await disabledLogin.json()).toEqual({
+        message: 'Password login has been disabled',
+        statusCode: 401,
+      });
+      expect(disabledLogin.headers.get('set-cookie')).toBeNull();
+      expect(sessionsAfter).toBe(sessionsBefore);
+      expect((await authRequest('/api/auth/validateToken', accessToken, { method: 'POST' })).status).toBe(200);
+      expect((await apiKeyRequest('/api/config', apiKey)).status).toBe(200);
+
+      config.passwordLogin.enabled = true;
+      const enableResponse = await authRequest('/api/admin/config', accessToken, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      expect(enableResponse.status).toBe(200);
+      expect((await login()).status).toBe(200);
     });
   });
 

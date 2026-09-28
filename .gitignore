@@ -29,3 +29,4 @@ vite.config.js.timestamp-*
 .devcontainer/library
 .devcontainer/.env*
 server/.wrangler
+web/build/

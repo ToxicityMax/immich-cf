@@ -84,16 +84,6 @@ app.get(
   },
 );
 
-// GET /api/server/theme -- Server theme
-app.get(
-  '/theme',
-  async (c) => {
-    const services = c.get('services');
-    const result = await services.server.getTheme();
-    return c.json(result);
-  },
-);
-
 // GET /api/server/config -- Server config
 app.get(
   '/config',

@@ -1,4 +1,4 @@
-import type { SyncAssetExifV1, SyncAssetV1, SyncItem } from 'src/dtos/sync.dto';
+import type { SyncAssetExifV1, SyncAssetV1, SyncAssetV2, SyncItem } from 'src/dtos/sync.dto';
 import { SyncEntityType } from 'src/enum';
 import { SyncAck } from 'src/types';
 
@@ -77,6 +77,15 @@ export function mapSyncAssetV1(row: any): SyncAssetV1 {
     width: row.width,
     height: row.height,
     isEdited: Boolean(row.isEdited),
+  };
+}
+
+export function mapSyncAssetV2(row: any): SyncAssetV2 {
+  const duration = row.duration == null ? null : Number(row.duration);
+  return {
+    ...mapSyncAssetV1(row),
+    createdAt: row.createdAt ?? null,
+    duration: Number.isFinite(duration) ? duration : null,
   };
 }
 

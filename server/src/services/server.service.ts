@@ -7,6 +7,7 @@
 
 import type { ServiceContext } from 'src/context';
 import { SERVER_VERSION, SERVER_VERSION_RESPONSE } from 'src/constants';
+import { getConfig } from 'src/config';
 import { UserRepository } from 'src/repositories/user.repository';
 
 export class ServerService {
@@ -83,6 +84,7 @@ export class ServerService {
   }
 
   async getFeatures() {
+    const config = await getConfig(this.ctx.env);
     return {
       smartSearch: false,
       facialRecognition: false,
@@ -92,21 +94,19 @@ export class ServerService {
       importFaces: false,
       sidecar: true,
       search: false,
-      trash: true,
+      trash: config.trash.enabled,
       oauth: false,
       oauthAutoLaunch: false,
       ocr: false,
-      passwordLogin: true,
+      passwordLogin: config.passwordLogin.enabled,
+      realtimeTranscoding: false,
       configFile: false,
       email: false,
     };
   }
 
-  async getTheme() {
-    return { customCss: '' };
-  }
-
   async getSystemConfig() {
+    const config = await getConfig(this.ctx.env);
     const hasAdmin = await this.userRepository.hasAdmin();
     const onboarding = await this.db
       .selectFrom('system_metadata')
@@ -119,16 +119,18 @@ export class ServerService {
       : false;
 
     return {
-      loginPageMessage: "Garrett Peake's immich",
-      trashDays: 30,
-      userDeleteDelay: 7,
-      oauthButtonText: 'OAuth Not Supported',
+      loginPageMessage: config.server.loginPageMessage,
+      trashDays: config.trash.days,
+      userDeleteDelay: config.user.deleteDelay,
+      oauthButtonText: config.oauth.buttonText,
+      oauthAccountManagementUrl: config.oauth.accountManagementUrl,
       isInitialized: hasAdmin,
       isOnboarded,
-      externalDomain: '',
-      publicUsers: true,
-      mapDarkStyleUrl: '',
-      mapLightStyleUrl: '',
+      externalDomain: config.server.externalDomain,
+      publicUsers: config.server.publicUsers,
+      mapDarkStyleUrl: config.map.darkStyle,
+      mapLightStyleUrl: config.map.lightStyle,
+      minFaces: 3,
       maintenanceMode: false,
     };
   }

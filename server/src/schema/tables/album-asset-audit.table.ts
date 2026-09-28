@@ -16,6 +16,9 @@ export class AlbumAssetAuditTable {
   @Column({ type: 'uuid', index: true })
   assetId!: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  relationUpdateId!: string | null;
+
   @CreateDateColumn({ default: () => 'clock_timestamp()', index: true })
   deletedAt!: Generated<Timestamp>;
 }

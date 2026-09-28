@@ -15,7 +15,6 @@ import {
   AssetMediaStatus,
   AssetRejectReason,
   AssetUploadAction,
-  CheckExistingAssetsResponseDto,
 } from 'src/dtos/asset-media-response.dto';
 import {
   AssetBulkUploadCheckDto,
@@ -23,7 +22,6 @@ import {
   AssetMediaOptionsDto,
   AssetMediaReplaceDto,
   AssetMediaSize,
-  CheckExistingAssetsDto,
 } from 'src/dtos/asset-media.dto';
 import { AssetDownloadOriginalDto } from 'src/dtos/asset.dto';
 import type { AuthDto } from 'src/dtos/auth.dto';
@@ -42,7 +40,7 @@ import { MediaRepository } from 'src/repositories/media.repository';
 import { requireAccess, requireUploadAccess } from 'src/utils/access';
 import { extname } from 'src/utils/path';
 import { mimeTypes } from 'src/utils/mime-types';
-import { mapSyncAssetExifV1, mapSyncAssetV1 } from 'src/utils/sync';
+import { mapSyncAssetExifV1, mapSyncAssetV2 } from 'src/utils/sync';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -186,8 +184,6 @@ export class AssetMediaService {
         libraryId: null,
         checksum,
         originalPath: r2Key,
-        deviceAssetId: dto.deviceAssetId,
-        deviceId: dto.deviceId,
         fileCreatedAt: dto.fileCreatedAt ? new Date(dto.fileCreatedAt).toISOString() : new Date().toISOString(),
         fileModifiedAt: dto.fileModifiedAt ? new Date(dto.fileModifiedAt).toISOString() : new Date().toISOString(),
         localDateTime: dto.fileCreatedAt ? new Date(dto.fileCreatedAt).toISOString() : new Date().toISOString(),
@@ -325,8 +321,6 @@ export class AssetMediaService {
       originalPath: r2Key,
       type: mimeTypes.assetType(originalName),
       originalFileName: originalName,
-      deviceAssetId: dto.deviceAssetId,
-      deviceId: dto.deviceId,
       fileCreatedAt: dto.fileCreatedAt ? new Date(dto.fileCreatedAt).toISOString() : undefined,
       fileModifiedAt: dto.fileModifiedAt ? new Date(dto.fileModifiedAt).toISOString() : undefined,
       localDateTime: dto.fileCreatedAt ? new Date(dto.fileCreatedAt).toISOString() : undefined,
@@ -494,18 +488,6 @@ export class AssetMediaService {
   // Existence checks
   // -------------------------------------------------------------------------
 
-  async checkExistingAssets(
-    auth: AuthDto,
-    checkExistingAssetsDto: CheckExistingAssetsDto,
-  ): Promise<CheckExistingAssetsResponseDto> {
-    const existingIds = await this.assetRepository.getByDeviceIds(
-      auth.user.id,
-      checkExistingAssetsDto.deviceId,
-      checkExistingAssetsDto.deviceAssetIds,
-    );
-    return { existingIds };
-  }
-
   async bulkUploadCheck(auth: AuthDto, dto: AssetBulkUploadCheckDto): Promise<AssetBulkUploadCheckResponseDto> {
     const checksums: Uint8Array[] = dto.assets.map((asset) => fromChecksum(asset.checksum));
     const results = await this.assetRepository.getByChecksums(auth.user.id, checksums);
@@ -563,8 +545,8 @@ export class AssetMediaService {
       }
 
       await this.ctx.realtime.sendUser(auth.user.id, 'on_upload_success', mapAsset(asset as any, { auth, withStack: true }));
-      await this.ctx.realtime.sendUser(auth.user.id, 'AssetUploadReadyV1', {
-        asset: mapSyncAssetV1(asset),
+      await this.ctx.realtime.sendUser(auth.user.id, 'AssetUploadReadyV2', {
+        asset: mapSyncAssetV2(asset),
         exif: mapSyncAssetExifV1((asset as any).exifInfo, id),
       });
     } catch (error) {

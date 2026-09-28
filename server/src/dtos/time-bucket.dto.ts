@@ -37,6 +37,7 @@ export interface TimeBucketAssetResponseDto {
   thumbhash: (string | null)[];
   fileCreatedAt: string[];
   localOffsetHours: number[];
+  createdAt: string[];
   duration: (string | null)[];
   stack?: ([string, string] | null)[];
   projectionType: (string | null)[];

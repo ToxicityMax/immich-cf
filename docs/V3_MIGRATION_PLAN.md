@@ -1,5 +1,24 @@
 # Immich v3.2.2 Port Plan
 
+This document records the v3.2.2 port that has now been implemented for the enabled Worker surface. Validated implementation details, exact upstream references, web preservation rules, and regression coverage are recorded in `V3_MIGRATION_FINDINGS.md`. Use `FEATURE_STATUS.md` for current product limitations rather than treating every upstream Immich feature as unfinished migration work.
+
+## Current Progress
+
+- Imported and built the exact v3.2.2 web source, tests, static assets, SDK, and translations.
+- Switched server/package version reporting and core discovery to v3.2.2.
+- Added v3 public config and removed the obsolete server-theme route.
+- Ported core asset upload/responses to the device-ID-free v3 shape with nullable integer duration.
+- Removed v2-only asset existence, device, random, and original-replacement routes.
+- Added `AssetUploadReadyV2`, v3 server-version events, and album update events.
+- Removed legacy full/delta sync routes and added a tested `AssetsV2` JSON Lines stream baseline.
+- Replaced `album.ownerId` with the v3 owner-role album membership model, nullable stored descriptions, owner-first responses, and `isOwned`/`isShared` filtering.
+- Replaced the fresh D1 schema with v3 UUIDv7 cursors, relationship create cursors, edit/audit tables, and active deletion triggers.
+- Completed the enabled v3 sync families, bounded paging, partner/shared-album backfills, composite acknowledgements, deletion convergence, and locked-folder isolation.
+- Added v3 shared-link cookie login and downloads, API-key rotation, configuration visibility, asset-edit sync, and repaired tag, memory, stack, and user response contracts.
+- Added API-level smoke coverage for signup/login, upload and timeline retrieval, media download, albums, shared links, PIN/locked assets, sync, and realtime.
+
+The remaining migration closure work is external client validation: run the exact web build in a real browser and run an upstream v3.2.2 mobile client against the Worker. Capability-gating unsupported pages is intentionally not part of the current scope. Media processing, advanced timeline behavior, forced cleanup, UI gating, and other items listed as deferred in `FEATURE_STATUS.md` predate this port and are not regressions introduced by v3.
+
 ## Goal
 
 Rebase WorkersImmich on the latest stable Immich release, v3.2.2. Treat this repository as a fresh project with no deployed databases, existing users, or v2 clients to preserve.
@@ -157,7 +176,7 @@ Update `server/test/socket.test.ts` with focused assertions for the changed even
 
 ## 5. Replace The Web Client And SDK
 
-The current web tree is mostly upstream v2.5.2, while v3.2.2 changes hundreds of web files. Replace the upstream-owned web code rather than merging it file by file.
+The web tree has been replaced with upstream v3.2.2. Keep future web changes limited to standalone npm/Cloudflare integration and explicit unsupported-feature gates.
 
 - Replace `web/src`, `web/static`, web tests, and web build configuration with v3.2.2.
 - Replace root `i18n/` with v3.2.2 translations.
@@ -212,7 +231,7 @@ npm run test:all
 npx wrangler deploy --dry-run
 ```
 
-Required web checks:
+Automated web checks:
 
 ```sh
 cd web
@@ -222,7 +241,7 @@ npm run check:typescript
 npm run build
 ```
 
-Smoke-test these core flows:
+The Worker integration suite now covers the API/protocol side of these core flows. Repeat them through a real browser or upstream mobile client where noted in `COMPATIBILITY.md`:
 
 1. Initial admin signup and login.
 2. Timeline load and image upload.
@@ -233,7 +252,9 @@ Smoke-test these core flows:
 7. Initial and incremental mobile sync.
 8. Realtime upload and album updates.
 
-## Recommended Work Order
+## Implemented Work Order
+
+Steps 1 through 7 are complete for the enabled Worker surface. Step 8 is complete for automated protocol checks; real-browser and upstream-mobile validation remain external.
 
 1. Replace the D1 schema and active Kysely types.
 2. Port discovery/config and core server DTOs/routes.

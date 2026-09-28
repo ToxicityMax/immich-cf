@@ -24,7 +24,7 @@ This project is a fork of [Immich](https://github.com/immich-app/immich) that re
 - Authenticated realtime asset and session updates
 - Basic shared links, timeline, memories, tags, activities, stacks, and sync routes
 
-Several items in the last line are partial and are not yet drop-in compatible with every upstream web or mobile workflow. Media derivatives, video, mobile sync convergence, shared-link passwords, background processing, and parts of the preserved admin UI still need work.
+Several items in the last line are partial and are not yet drop-in compatible with every upstream web or mobile workflow. Media derivatives, video, mobile sync convergence, large archive streaming, background processing, and parts of the preserved admin UI still need work.
 
 ## What was intentionally removed
 

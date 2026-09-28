@@ -3,10 +3,10 @@
  * This replaces the previous readFileSync(package.json) approach
  * which is not compatible with Cloudflare Workers.
  */
-export const SERVER_VERSION = '2.5.2';
+export const SERVER_VERSION = '3.2.2';
 
 const [major, minor, patch] = SERVER_VERSION.split('.').map(Number);
-export const SERVER_VERSION_RESPONSE = { major, minor, patch } as const;
+export const SERVER_VERSION_RESPONSE = { major, minor, patch, prerelease: null } as const;
 
 export const SALT_ROUNDS = 10;
 

@@ -96,6 +96,7 @@ export interface UserLicense {
 }
 
 export interface UserAdminResponseDto extends UserResponseDto {
+  clusterGroupId: string;
   storageLabel: string | null;
   shouldChangePassword: boolean;
   isAdmin: boolean;
@@ -138,6 +139,7 @@ export function mapUserAdmin(entity: UserAdmin): UserAdminResponseDto {
 
   return {
     ...mapUser(entity),
+    clusterGroupId: entity.clusterGroupId,
     storageLabel: entity.storageLabel,
     shouldChangePassword: entity.shouldChangePassword,
     isAdmin: entity.isAdmin,

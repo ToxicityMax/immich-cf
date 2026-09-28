@@ -8,6 +8,10 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
 import { Permission } from '../enum';
+import { validate } from '../middleware/validate';
+import { MemoryCreateSchema, MemorySearchSchema, MemoryUpdateSchema } from '../dtos/memory.dto';
+import { BulkIdsSchema } from '../dtos/asset-ids.response.dto';
+import { UUIDParamSchema } from '../validation';
 
 const app = new Hono<AppEnv>();
 
@@ -15,13 +19,11 @@ const app = new Hono<AppEnv>();
 app.get(
   '/',
   authMiddleware({ permission: Permission.MemoryRead }),
+  validate('query', MemorySearchSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const dto = {
-      for: c.req.query('for'),
-      sortOrder: c.req.query('sortOrder'),
-    };
+    const dto = c.req.valid('query');
     const result = await services.memory.search(auth, dto);
     return c.json(result);
   },
@@ -31,12 +33,13 @@ app.get(
 app.post(
   '/',
   authMiddleware({ permission: Permission.MemoryCreate }),
+  validate('json', MemoryCreateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.memory.create(auth, body);
-    return c.json(result);
+    return c.json(result, 201);
   },
 );
 
@@ -44,13 +47,11 @@ app.post(
 app.get(
   '/statistics',
   authMiddleware({ permission: Permission.MemoryStatistics }),
+  validate('query', MemorySearchSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const dto = {
-      for: c.req.query('for'),
-      sortOrder: c.req.query('sortOrder'),
-    };
+    const dto = c.req.valid('query');
     const result = await services.memory.statistics(auth, dto);
     return c.json(result);
   },
@@ -60,6 +61,7 @@ app.get(
 app.get(
   '/:id',
   authMiddleware({ permission: Permission.MemoryRead }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -73,11 +75,13 @@ app.get(
 app.put(
   '/:id',
   authMiddleware({ permission: Permission.MemoryUpdate }),
+  validate('param', UUIDParamSchema),
+  validate('json', MemoryUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.memory.update(auth, id, body);
     return c.json(result);
   },
@@ -87,6 +91,7 @@ app.put(
 app.delete(
   '/:id',
   authMiddleware({ permission: Permission.MemoryDelete }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -100,11 +105,13 @@ app.delete(
 app.put(
   '/:id/assets',
   authMiddleware({ permission: Permission.MemoryAssetCreate }),
+  validate('param', UUIDParamSchema),
+  validate('json', BulkIdsSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.memory.addAssets(auth, id, body);
     return c.json(result);
   },
@@ -114,11 +121,13 @@ app.put(
 app.delete(
   '/:id/assets',
   authMiddleware({ permission: Permission.MemoryAssetDelete }),
+  validate('param', UUIDParamSchema),
+  validate('json', BulkIdsSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.memory.removeAssets(auth, id, body);
     return c.json(result);
   },

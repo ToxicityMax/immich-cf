@@ -6,7 +6,9 @@ import { AuthDto } from 'src/dtos/auth.dto';
 // --- Request Schemas ---
 
 export const StackCreateSchema = z.object({
-  assetIds: z.array(z.string().uuid()).min(2),
+  assetIds: z.array(z.string().uuid()).min(2).refine((ids) => new Set(ids).size === ids.length, {
+    message: 'Asset IDs must be distinct',
+  }),
 });
 export type StackCreateDto = z.infer<typeof StackCreateSchema>;
 
@@ -17,6 +19,8 @@ export type StackSearchDto = z.infer<typeof StackSearchSchema>;
 
 export const StackUpdateSchema = z.object({
   primaryAssetId: z.string().uuid().optional(),
+}).refine((value) => value.primaryAssetId !== undefined, {
+  message: 'At least one field must be provided',
 });
 export type StackUpdateDto = z.infer<typeof StackUpdateSchema>;
 

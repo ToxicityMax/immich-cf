@@ -62,6 +62,7 @@ export type User = {
 };
 
 export type UserAdmin = User & {
+  clusterGroupId: string;
   storageLabel: string | null;
   shouldChangePassword: boolean;
   isAdmin: boolean;
@@ -120,8 +121,6 @@ export type AssetFile = {
 export type Asset = {
   id: string;
   checksum: Uint8Array;
-  deviceAssetId: string;
-  deviceId: string;
   fileCreatedAt: string;
   fileModifiedAt: string;
   isExternal: boolean;

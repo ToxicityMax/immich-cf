@@ -133,7 +133,7 @@ export class SessionRepository {
   async lockAll(userId: string) {
     await this.db
       .updateTable('session')
-      .set({ pinExpiresAt: null })
+      .set({ pinExpiresAt: null, isPendingSyncReset: true })
       .where('userId', '=', userId)
       .execute();
   }

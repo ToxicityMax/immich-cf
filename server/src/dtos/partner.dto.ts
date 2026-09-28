@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { UserResponseDto } from 'src/dtos/user.dto';
-import { PartnerDirection } from 'src/repositories/partner.repository';
 
 // --- Request Schemas ---
 
@@ -15,7 +14,7 @@ export const PartnerUpdateSchema = z.object({
 export type PartnerUpdateDto = z.infer<typeof PartnerUpdateSchema>;
 
 export const PartnerSearchSchema = z.object({
-  direction: z.nativeEnum(PartnerDirection),
+  direction: z.enum(['shared-by', 'shared-with']),
 });
 export type PartnerSearchDto = z.infer<typeof PartnerSearchSchema>;
 

@@ -15,6 +15,7 @@
 import type { Insertable, Kysely, Updateable } from 'kysely';
 import { sql } from 'kysely';
 import type { DB, AlbumTable } from 'src/schema';
+import { AlbumUserRole } from 'src/enum';
 
 const CHUNK_SIZE = 90;
 const INSERT_CHUNK_SIZE = 45;
@@ -32,7 +33,7 @@ export interface AlbumInfoOptions {
 }
 
 export class AlbumRepository {
-  constructor(private db: Kysely<DB>) {}
+  constructor(private db: Kysely<DB>, private d1?: D1Database) {}
 
   async getById(id: string, options: AlbumInfoOptions) {
     const album = await this.db
@@ -46,28 +47,7 @@ export class AlbumRepository {
       return undefined;
     }
 
-    const owner = await this.db
-      .selectFrom('user')
-      .selectAll()
-      .where('user.id', '=', album.ownerId)
-      .executeTakeFirst();
-
-    const albumUsers = await this.db
-      .selectFrom('album_user')
-      .selectAll('album_user')
-      .where('album_user.albumId', '=', id)
-      .execute();
-
-    const albumUsersWithUser = await Promise.all(
-      albumUsers.map(async (au) => {
-        const user = await this.db
-          .selectFrom('user')
-          .selectAll()
-          .where('user.id', '=', au.userId)
-          .executeTakeFirst();
-        return { ...au, user };
-      }),
-    );
+    const albumUsers = await this.getAlbumUsers(id);
 
     const sharedLinks = await this.db
       .selectFrom('shared_link')
@@ -91,8 +71,7 @@ export class AlbumRepository {
 
     return {
       ...album,
-      owner,
-      albumUsers: albumUsersWithUser,
+      albumUsers,
       sharedLinks,
       assets: assets ?? [],
     };
@@ -104,23 +83,59 @@ export class AlbumRepository {
       .selectAll('album')
       .innerJoin('album_asset', 'album_asset.albumId', 'album.id')
       .where((eb) =>
-        eb.or([
-          eb('album.ownerId', '=', ownerId),
-          eb.exists(
-            eb
-              .selectFrom('album_user')
-              .select(sql`1`.as('one'))
-              .whereRef('album_user.albumId', '=', 'album.id')
-              .where('album_user.userId', '=', ownerId),
-          ),
-        ]),
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .select(sql`1`.as('one'))
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.userId', '=', ownerId),
+        ),
       )
       .where('album_asset.assetId', '=', assetId)
       .where('album.deletedAt', 'is', null)
       .orderBy('album.createdAt', 'desc')
       .execute();
 
-    return this.enrichAlbums(albums);
+    return this.enrichAlbums(albums, ownerId);
+  }
+
+  async getAll(ownerId: string, options: { isOwned?: boolean; isShared?: boolean }) {
+    let query = this.db
+      .selectFrom('album')
+      .selectAll('album')
+      .innerJoin('album_user as current_user', (join) =>
+        join.onRef('current_user.albumId', '=', 'album.id').on('current_user.userId', '=', ownerId),
+      )
+      .where('album.deletedAt', 'is', null);
+
+    if (options.isOwned !== undefined) {
+      query = query.where(
+        'current_user.role',
+        options.isOwned ? '=' : '!=',
+        AlbumUserRole.Owner,
+      );
+    }
+
+    if (options.isShared !== undefined) {
+      query = query.where((eb) => {
+        const isShared = eb.or([
+          eb.exists(
+            eb
+              .selectFrom('album_user as shared_user')
+              .select(sql`1`.as('one'))
+              .whereRef('shared_user.albumId', '=', 'album.id')
+              .where('shared_user.role', '!=', AlbumUserRole.Owner),
+          ),
+          eb.exists(
+            eb.selectFrom('shared_link').select(sql`1`.as('one')).whereRef('shared_link.albumId', '=', 'album.id'),
+          ),
+        ]);
+        return options.isShared ? isShared : eb.not(isShared);
+      });
+    }
+
+    const albums = await query.orderBy('album.createdAt', 'desc').execute();
+    return this.enrichAlbums(albums, ownerId);
   }
 
   async getMetadataForIds(ids: string[]): Promise<AlbumAssetCount[]> {
@@ -164,12 +179,21 @@ export class AlbumRepository {
     const albums = await this.db
       .selectFrom('album')
       .selectAll('album')
-      .where('album.ownerId', '=', ownerId)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .select(sql`1`.as('one'))
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.userId', '=', ownerId)
+            .where('album_user.role', '=', AlbumUserRole.Owner),
+        ),
+      )
       .where('album.deletedAt', 'is', null)
       .orderBy('album.createdAt', 'desc')
       .execute();
 
-    return this.enrichAlbums(albums);
+    return this.enrichAlbums(albums, ownerId);
   }
 
   async getShared(ownerId: string) {
@@ -177,18 +201,22 @@ export class AlbumRepository {
       .selectFrom('album')
       .selectAll('album')
       .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .select(sql`1`.as('one'))
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.userId', '=', ownerId),
+        ),
+      )
+      .where((eb) =>
         eb.or([
           eb.exists(
             eb
-              .selectFrom('album_user')
+              .selectFrom('album_user as shared_user')
               .select(sql`1`.as('one'))
-              .whereRef('album_user.albumId', '=', 'album.id')
-              .where((eb2) =>
-                eb2.or([
-                  eb2('album.ownerId', '=', ownerId),
-                  eb2('album_user.userId', '=', ownerId),
-                ]),
-              ),
+              .whereRef('shared_user.albumId', '=', 'album.id')
+              .where('shared_user.role', '!=', AlbumUserRole.Owner),
           ),
           eb.exists(
             eb
@@ -203,19 +231,32 @@ export class AlbumRepository {
       .orderBy('album.createdAt', 'desc')
       .execute();
 
-    return this.enrichAlbums(albums);
+    return this.enrichAlbums(albums, ownerId);
   }
 
   async getNotShared(ownerId: string) {
     const albums = await this.db
       .selectFrom('album')
       .selectAll('album')
-      .where('album.ownerId', '=', ownerId)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .select(sql`1`.as('one'))
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.userId', '=', ownerId)
+            .where('album_user.role', '=', AlbumUserRole.Owner),
+        ),
+      )
       .where('album.deletedAt', 'is', null)
       .where((eb) =>
         eb.not(
           eb.exists(
-            eb.selectFrom('album_user').select(sql`1`.as('one')).whereRef('album_user.albumId', '=', 'album.id'),
+            eb
+              .selectFrom('album_user')
+              .select(sql`1`.as('one'))
+              .whereRef('album_user.albumId', '=', 'album.id')
+              .where('album_user.role', '!=', AlbumUserRole.Owner),
           ),
         ),
       )
@@ -229,14 +270,23 @@ export class AlbumRepository {
       .orderBy('album.createdAt', 'desc')
       .execute();
 
-    return this.enrichAlbums(albums);
+    return this.enrichAlbums(albums, ownerId);
   }
 
   async restoreAll(userId: string): Promise<void> {
     await this.db
       .updateTable('album')
       .set({ deletedAt: null })
-      .where('ownerId', '=', userId)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .select(sql`1`.as('one'))
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.userId', '=', userId)
+            .where('album_user.role', '=', AlbumUserRole.Owner),
+        ),
+      )
       .execute();
   }
 
@@ -244,12 +294,33 @@ export class AlbumRepository {
     await this.db
       .updateTable('album')
       .set({ deletedAt: new Date().toISOString() })
-      .where('ownerId', '=', userId)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .select(sql`1`.as('one'))
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.userId', '=', userId)
+            .where('album_user.role', '=', AlbumUserRole.Owner),
+        ),
+      )
       .execute();
   }
 
   async deleteAll(userId: string): Promise<void> {
-    await this.db.deleteFrom('album').where('ownerId', '=', userId).execute();
+    await this.db
+      .deleteFrom('album')
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .select(sql`1`.as('one'))
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.userId', '=', userId)
+            .where('album_user.role', '=', AlbumUserRole.Owner),
+        ),
+      )
+      .execute();
   }
 
   async removeAssetsFromAll(assetIds: string[]): Promise<void> {
@@ -314,29 +385,35 @@ export class AlbumRepository {
     assetIds: string[],
     albumUsers: Array<{ userId: string; role?: string }>,
   ) {
-    // D1 does not support transactions via kysely-d1, so use sequential inserts.
+    const uniqueAssetIds = [...new Set(assetIds)];
+    const uniqueAlbumUsers = [...new Map(albumUsers.map((user) => [user.userId, user])).values()];
+    if (uniqueAlbumUsers.filter(({ role }) => role === AlbumUserRole.Owner).length !== 1) {
+      throw new Error('Album must have an owner');
+    }
+
+    if (!this.d1) {
+      throw new Error('D1 binding is required to create an album');
+    }
+
     const newAlbumId = album.id || crypto.randomUUID();
-    await this.db
-      .insertInto('album')
-      .values({ ...album, id: newAlbumId })
-      .execute();
-
-    if (assetIds.length > 0) {
-      await this.addAssets(this.db, newAlbumId, assetIds);
-    }
-
-    if (albumUsers.length > 0) {
-      await this.db
-        .insertInto('album_user')
-        .values(
-          albumUsers.map((au) => ({
-            albumId: newAlbumId,
-            userId: au.userId,
-            role: au.role || 'viewer',
-          })),
-        )
-        .execute();
-    }
+    const statements: D1PreparedStatement[] = [
+      this.d1.prepare(`
+        INSERT INTO album (id, albumName, description, albumThumbnailAssetId, "order")
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(
+        newAlbumId,
+        album.albumName ?? 'Untitled',
+        album.description ?? null,
+        album.albumThumbnailAssetId ?? null,
+        album.order ?? 'desc',
+      ),
+      ...uniqueAssetIds.map((assetId) =>
+        this.d1!.prepare('INSERT INTO album_asset (albumId, assetId) VALUES (?, ?)').bind(newAlbumId, assetId)),
+      ...uniqueAlbumUsers.map((user) =>
+        this.d1!.prepare('INSERT INTO album_user (albumId, userId, role) VALUES (?, ?, ?)')
+          .bind(newAlbumId, user.userId, user.role || AlbumUserRole.Editor)),
+    ];
+    await this.d1.batch(statements);
 
     return this.getById(newAlbumId, { withAssets: true });
   }
@@ -355,28 +432,7 @@ export class AlbumRepository {
       .where('album.id', '=', id)
       .executeTakeFirstOrThrow();
 
-    const owner = await this.db
-      .selectFrom('user')
-      .selectAll()
-      .where('user.id', '=', updated.ownerId)
-      .executeTakeFirst();
-
-    const albumUsers = await this.db
-      .selectFrom('album_user')
-      .selectAll('album_user')
-      .where('album_user.albumId', '=', id)
-      .execute();
-
-    const albumUsersWithUser = await Promise.all(
-      albumUsers.map(async (au) => {
-        const user = await this.db
-          .selectFrom('user')
-          .selectAll()
-          .where('user.id', '=', au.userId)
-          .executeTakeFirst();
-        return { ...au, user };
-      }),
-    );
+    const albumUsers = await this.getAlbumUsers(id);
 
     const sharedLinks = await this.db
       .selectFrom('shared_link')
@@ -386,8 +442,7 @@ export class AlbumRepository {
 
     return {
       ...updated,
-      owner,
-      albumUsers: albumUsersWithUser,
+      albumUsers,
       sharedLinks,
     };
   }
@@ -523,31 +578,10 @@ export class AlbumRepository {
     }
   }
 
-  private async enrichAlbums(albums: any[]) {
+  private async enrichAlbums(albums: any[], authUserId?: string) {
     return Promise.all(
       albums.map(async (album) => {
-        const owner = await this.db
-          .selectFrom('user')
-          .selectAll()
-          .where('user.id', '=', album.ownerId)
-          .executeTakeFirst();
-
-        const albumUsers = await this.db
-          .selectFrom('album_user')
-          .selectAll('album_user')
-          .where('album_user.albumId', '=', album.id)
-          .execute();
-
-        const albumUsersWithUser = await Promise.all(
-          albumUsers.map(async (au) => {
-            const user = await this.db
-              .selectFrom('user')
-              .selectAll()
-              .where('user.id', '=', au.userId)
-              .executeTakeFirst();
-            return { ...au, user };
-          }),
-        );
+        const albumUsers = await this.getAlbumUsers(album.id, authUserId);
 
         const sharedLinks = await this.db
           .selectFrom('shared_link')
@@ -557,11 +591,36 @@ export class AlbumRepository {
 
         return {
           ...album,
-          owner,
-          albumUsers: albumUsersWithUser,
+          albumUsers,
           sharedLinks,
         };
       }),
     );
+  }
+
+  private async getAlbumUsers(albumId: string, authUserId?: string) {
+    const albumUsers = await this.db
+      .selectFrom('album_user')
+      .innerJoin('user', 'user.id', 'album_user.userId')
+      .selectAll('album_user')
+      .selectAll('user')
+      .where('album_user.albumId', '=', albumId)
+      .where('user.deletedAt', 'is', null)
+      .execute();
+
+    return albumUsers
+      .map(({ albumId: _albumId, userId, role, createId, updateId, ...user }) => ({
+        albumId,
+        userId,
+        role,
+        createId,
+        updateId,
+        user,
+      }))
+      .sort((a, b) => {
+        const rank = (value: typeof a) =>
+          value.role === AlbumUserRole.Owner ? 0 : value.userId === authUserId ? 1 : 2;
+        return rank(a) - rank(b) || a.user.name.localeCompare(b.user.name);
+      });
   }
 }

@@ -5,14 +5,15 @@
     AlbumModalRowType,
     isSelectableRowType,
   } from '$lib/components/shared-components/album-selection/album-selection-utils';
+  import { eventManager } from '$lib/managers/event-manager.svelte';
   import { albumViewSettings } from '$lib/stores/preferences.store';
   import { createAlbum, getAllAlbums, type AlbumResponseDto } from '@immich/sdk';
   import { Button, Icon, Modal, ModalBody, ModalFooter, Text } from '@immich/ui';
   import { mdiKeyboardReturn } from '@mdi/js';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
-  import AlbumListItem from '../components/asset-viewer/album-list-item.svelte';
-  import NewAlbumListItem from '../components/shared-components/album-selection/new-album-list-item.svelte';
+  import AlbumListItem from '../components/asset-viewer/AlbumListItem.svelte';
+  import NewAlbumListItem from '../components/shared-components/album-selection/NewAlbumListItem.svelte';
 
   let albums: AlbumResponseDto[] = $state([]);
   let recentAlbums: AlbumResponseDto[] = $state([]);
@@ -20,23 +21,23 @@
   let search = $state('');
   let selectedRowIndex: number = $state(-1);
 
-  interface Props {
-    shared: boolean;
+  type Props = {
     onClose: (albums?: AlbumResponseDto[]) => void;
-  }
+    selectedItemsCount?: number;
+  };
 
-  let { shared, onClose }: Props = $props();
+  let { onClose, selectedItemsCount }: Props = $props();
 
   onMount(async () => {
-    albums = await getAllAlbums({ shared: shared || undefined });
-    recentAlbums = albums.sort((a, b) => (new Date(a.updatedAt) > new Date(b.updatedAt) ? -1 : 1)).slice(0, 3);
+    albums = await getAllAlbums({});
+    recentAlbums = [...albums].sort((a, b) => (new Date(a.updatedAt) > new Date(b.updatedAt) ? -1 : 1)).slice(0, 3);
     loading = false;
   });
 
   const multiSelectedAlbumIds: string[] = $state([]);
   const multiSelectActive = $derived(multiSelectedAlbumIds.length > 0);
 
-  const rowConverter = new AlbumModalRowConverter(shared, $albumViewSettings.sortBy, $albumViewSettings.sortOrder);
+  const rowConverter = new AlbumModalRowConverter($albumViewSettings.sortBy, $albumViewSettings.sortOrder);
   const albumModalRows = $derived(
     rowConverter.toModalRows(search, recentAlbums, albums, selectedRowIndex, multiSelectedAlbumIds),
   );
@@ -44,6 +45,7 @@
 
   const onNewAlbum = async (name: string) => {
     const album = await createAlbum({ createAlbumDto: { albumName: name } });
+    eventManager.emit('AlbumCreate', album);
     onClose([album]);
   };
 
@@ -104,6 +106,7 @@
         }
         break;
       }
+      // no default
     }
 
     selectedRowIndex = -1;
@@ -135,6 +138,7 @@
         break;
       }
       case 'Control': {
+        // eslint-disable-next-line unicorn/no-late-event-control
         e.preventDefault();
         handleMultiSelect();
         break;
@@ -144,16 +148,22 @@
       }
     }
   };
+
+  const title = $derived(
+    selectedItemsCount === undefined
+      ? $t('select_albums')
+      : $t('add_to_album_item_count', { values: { count: selectedItemsCount } }),
+  );
 </script>
 
-<Modal title={shared ? $t('add_to_shared_album') : $t('add_to_album')} {onClose} size="small">
+<Modal {title} {onClose} size="small">
   <ModalBody>
     <div class="mb-2 flex max-h-100 flex-col">
       {#if loading}
         <!-- eslint-disable-next-line svelte/require-each-key -->
         {#each { length: 3 } as _}
           <div class="flex animate-pulse gap-4 px-6 py-2">
-            <div class="h-12 w-12 rounded-xl bg-slate-200"></div>
+            <div class="size-12 rounded-xl bg-slate-200"></div>
             <div class="flex flex-col items-start justify-center gap-2">
               <span class="h-4 w-36 animate-pulse bg-slate-200"></span>
               <div class="flex animate-pulse gap-1">
@@ -201,16 +211,16 @@
     {/if}
   </ModalBody>
   <ModalFooter>
-    <div class="flex justify-around w-full">
+    <div class="flex w-full justify-around">
       <div class="flex gap-4">
-        <div class="flex gap-1 place-items-center">
-          <span class="bg-gray-300 dark:bg-gray-500 rounded p-1">
+        <div class="flex place-items-center gap-1">
+          <span class="rounded-sm bg-gray-300 p-1 dark:bg-gray-500">
             <Icon icon={mdiKeyboardReturn} size="1rem" />
           </span>
           <Text size="tiny">{$t('to_select')}</Text>
         </div>
-        <div class="flex gap-1 place-items-center">
-          <span class="bg-gray-300 dark:bg-gray-500 rounded p-1">
+        <div class="flex place-items-center gap-1">
+          <span class="rounded-sm bg-gray-300 p-1 dark:bg-gray-500">
             <Text size="tiny">CTRL</Text>
           </span>
           <Text size="tiny">{$t('to_multi_select')}</Text>

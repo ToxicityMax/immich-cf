@@ -17,6 +17,7 @@ import type { ServiceContext } from 'src/context';
 import { CryptoRepository } from 'src/repositories/crypto.repository';
 import { isGranted } from 'src/utils/access';
 import { getUserAgentDetails } from 'src/utils/request';
+import { UnauthorizedException } from 'src/utils/errors';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,6 +30,8 @@ export interface AuthOptions {
   admin?: boolean;
   /** Route supports shared link access. */
   sharedLink?: boolean;
+  /** Set to false only for routes needed before shared-link password login. */
+  sharedLinkPassword?: boolean;
 }
 
 export type LoginDetails = {
@@ -145,6 +148,11 @@ async function validateSession(
         .set({ pinExpiresAt: newExpiry })
         .where('session.id', '=', session.id)
         .execute();
+    } else if (!hasElevatedPermission) {
+      await db.updateTable('session')
+        .set({ pinExpiresAt: null, isPendingSyncReset: true })
+        .where('session.id', '=', session.id)
+        .execute();
     }
   }
 
@@ -238,20 +246,25 @@ async function validateSharedLinkKey(
 ): Promise<AuthDto> {
   // Convert key to bytes for comparison
   let keyBytes: Uint8Array;
-  if (key.length === 100) {
-    // hex encoded
-    keyBytes = new Uint8Array(key.length / 2);
-    for (let i = 0; i < key.length; i += 2) {
-      keyBytes[i / 2] = Number.parseInt(key.slice(i, i + 2), 16);
+  try {
+    if (key.length === 100) {
+      if (!/^[\dA-Fa-f]+$/.test(key)) {
+        throw new Error('Invalid hex key');
+      }
+      keyBytes = new Uint8Array(key.length / 2);
+      for (let i = 0; i < key.length; i += 2) {
+        keyBytes[i / 2] = Number.parseInt(key.slice(i, i + 2), 16);
+      }
+    } else {
+      const base64 = key.replace(/-/g, '+').replace(/_/g, '/');
+      const binaryString = atob(base64);
+      keyBytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        keyBytes[i] = binaryString.charCodeAt(i);
+      }
     }
-  } else {
-    // base64url encoded
-    const base64 = key.replace(/-/g, '+').replace(/_/g, '/');
-    const binaryString = atob(base64);
-    keyBytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      keyBytes[i] = binaryString.charCodeAt(i);
-    }
+  } catch {
+    throw new HTTPException(401, { message: 'Invalid share key' });
   }
 
   const sharedLink = await db
@@ -452,6 +465,7 @@ export function authMiddleware(options: AuthOptions = {}) {
   const {
     admin: adminRoute = false,
     sharedLink: sharedLinkRoute = false,
+    sharedLinkPassword = true,
     permission,
   } = options;
 
@@ -480,6 +494,20 @@ export function authMiddleware(options: AuthOptions = {}) {
     // Shared link on non-shared route check
     if (authDto.sharedLink && !sharedLinkRoute) {
       throw new HTTPException(403, { message: 'Forbidden' });
+    }
+
+    if (authDto.sharedLink?.password && sharedLinkPassword) {
+      const cookie = getCookieValue(headers, ImmichCookie.SharedLinkToken);
+      if (!cookie) {
+        throw new UnauthorizedException('Password required');
+      }
+
+      const expectedToken = await cryptoRepo.hashSha256(
+        `${authDto.sharedLink.id}-${authDto.sharedLink.password}`,
+      );
+      if (!cookie.split(',').includes(expectedToken)) {
+        throw new UnauthorizedException('Invalid password');
+      }
     }
 
     // API key permission check

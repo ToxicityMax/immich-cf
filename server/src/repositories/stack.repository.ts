@@ -142,7 +142,9 @@ export class StackRepository {
 
   async deleteAll(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
-    await this.db.deleteFrom('stack').where('id', 'in', ids).execute();
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      await this.db.deleteFrom('stack').where('id', 'in', ids.slice(i, i + CHUNK_SIZE)).execute();
+    }
   }
 
   async update(id: string, entity: Updateable<StackTable>, includeLocked = false) {

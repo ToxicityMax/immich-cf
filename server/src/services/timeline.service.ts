@@ -99,6 +99,7 @@ export class TimelineService {
         'asset.deletedAt',
         'asset.thumbhash',
         'asset.fileCreatedAt',
+        'asset.createdAt',
         'asset.localDateTime',
         'asset.duration',
         'asset.livePhotoVideoId',
@@ -163,6 +164,7 @@ export class TimelineService {
       thumbhash: [],
       fileCreatedAt: [],
       localOffsetHours: [],
+      createdAt: [],
       duration: [],
       projectionType: [],
       livePhotoVideoId: [],
@@ -208,6 +210,8 @@ export class TimelineService {
       }
       result.localOffsetHours.push(offsetHours);
 
+      const createdAt = row.createdAt.includes('T') ? row.createdAt : `${row.createdAt.replace(' ', 'T')}Z`;
+      result.createdAt.push(new Date(createdAt).toISOString());
       result.duration.push(row.duration ?? null);
       result.projectionType.push(row.projectionType ?? null);
       result.livePhotoVideoId.push(row.livePhotoVideoId ?? null);

@@ -11,19 +11,20 @@ import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
 import { MemoryRepository } from 'src/repositories/memory.repository';
 import { requireAccess, checkAccess } from 'src/utils/access';
+import { mapMemory } from 'src/dtos/memory.dto';
 
 export class MemoryService {
   private memoryRepository: MemoryRepository;
   private accessRepository: AccessRepository;
 
   constructor(private ctx: ServiceContext) {
-    this.memoryRepository = new MemoryRepository(ctx.db);
+    this.memoryRepository = new MemoryRepository(ctx.db, ctx.env.DB);
     this.accessRepository = new AccessRepository(ctx.db);
   }
 
   async search(auth: AuthDto, dto: any) {
     const memories = await this.memoryRepository.search(auth.user.id, dto);
-    return memories;
+    return memories.filter((memory: any) => memory.assets.length > 0).map((memory: any) => mapMemory(memory, auth));
   }
 
   statistics(auth: AuthDto, dto: any) {
@@ -36,31 +37,34 @@ export class MemoryService {
       permission: Permission.MemoryRead,
       ids: [id],
     });
-    const memory = await this.findOrFail(id);
-    return memory;
+    const memory = await this.findOrFail(id, auth.user.id);
+    return mapMemory(memory as any, auth);
   }
 
   async create(auth: AuthDto, dto: any) {
     const assetIds = dto.assetIds || [];
     const allowedAssetIds = await checkAccess(this.accessRepository, {
       auth,
-      permission: Permission.AssetShare,
+      permission: Permission.AssetUpdate,
       ids: assetIds,
     });
 
     const memory = await this.memoryRepository.create(
       {
+        id: this.ctx.crypto.randomUUID(),
         ownerId: auth.user.id,
         type: dto.type,
         data: JSON.stringify(dto.data || {}),
         isSaved: dto.isSaved ? 1 : 0,
-        memoryAt: dto.memoryAt,
-        seenAt: dto.seenAt,
+        memoryAt: this.asIsoString(dto.memoryAt),
+        seenAt: dto.seenAt ? this.asIsoString(dto.seenAt) : null,
+        showAt: dto.showAt ? this.asIsoString(dto.showAt) : null,
+        hideAt: dto.hideAt ? this.asIsoString(dto.hideAt) : null,
       },
       allowedAssetIds,
     );
 
-    return memory;
+    return mapMemory(memory as any, auth);
   }
 
   async update(auth: AuthDto, id: string, dto: any) {
@@ -70,13 +74,13 @@ export class MemoryService {
       ids: [id],
     });
 
-    const memory = await this.memoryRepository.update(id, {
+    const memory = await this.memoryRepository.update(id, auth.user.id, {
       isSaved: dto.isSaved !== undefined ? (dto.isSaved ? 1 : 0) : undefined,
-      memoryAt: dto.memoryAt,
-      seenAt: dto.seenAt,
+      memoryAt: dto.memoryAt ? this.asIsoString(dto.memoryAt) : undefined,
+      seenAt: dto.seenAt ? this.asIsoString(dto.seenAt) : undefined,
     });
 
-    return memory;
+    return mapMemory(memory as any, auth);
   }
 
   async remove(auth: AuthDto, id: string): Promise<void> {
@@ -85,23 +89,23 @@ export class MemoryService {
       permission: Permission.MemoryDelete,
       ids: [id],
     });
-    await this.memoryRepository.delete(id);
+    await this.memoryRepository.delete(id, auth.user.id);
   }
 
   async addAssets(auth: AuthDto, id: string, dto: { ids: string[] }) {
     await requireAccess(this.accessRepository, {
       auth,
-      permission: Permission.MemoryRead,
+      permission: Permission.MemoryUpdate,
       ids: [id],
     });
 
     const allowedAssetIds = await checkAccess(this.accessRepository, {
       auth,
-      permission: Permission.AssetShare,
+      permission: Permission.AssetUpdate,
       ids: dto.ids,
     });
 
-    const existingAssetIds = await this.memoryRepository.getAssetIds(id, dto.ids);
+    const existingAssetIds = await this.memoryRepository.getAssetIds(id, auth.user.id, dto.ids);
     const results: Array<{ id: string; success: boolean; error?: string }> = [];
     const toAdd: string[] = [];
 
@@ -117,8 +121,8 @@ export class MemoryService {
     }
 
     if (toAdd.length > 0) {
-      await this.memoryRepository.addAssetIds(id, toAdd);
-      await this.memoryRepository.update(id, { updatedAt: new Date().toISOString() });
+      await this.memoryRepository.addAssetIds(id, auth.user.id, toAdd);
+      await this.memoryRepository.update(id, auth.user.id, { updatedAt: new Date().toISOString() });
     }
 
     return results;
@@ -131,7 +135,7 @@ export class MemoryService {
       ids: [id],
     });
 
-    const existingAssetIds = await this.memoryRepository.getAssetIds(id, dto.ids);
+    const existingAssetIds = await this.memoryRepository.getAssetIds(id, auth.user.id, dto.ids);
     const results: Array<{ id: string; success: boolean; error?: string }> = [];
     const toRemove: string[] = [];
 
@@ -145,18 +149,22 @@ export class MemoryService {
     }
 
     if (toRemove.length > 0) {
-      await this.memoryRepository.removeAssetIds(id, toRemove);
-      await this.memoryRepository.update(id, { updatedAt: new Date().toISOString() });
+      await this.memoryRepository.removeAssetIds(id, auth.user.id, toRemove);
+      await this.memoryRepository.update(id, auth.user.id, { updatedAt: new Date().toISOString() });
     }
 
     return results;
   }
 
-  private async findOrFail(id: string) {
-    const memory = await this.memoryRepository.get(id);
+  private async findOrFail(id: string, ownerId: string) {
+    const memory = await this.memoryRepository.get(id, ownerId);
     if (!memory) {
       throw new Error('Memory not found');
     }
     return memory;
+  }
+
+  private asIsoString(value: Date | string): string {
+    return value instanceof Date ? value.toISOString() : value;
   }
 }

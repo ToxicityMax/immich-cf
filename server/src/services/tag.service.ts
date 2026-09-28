@@ -12,6 +12,8 @@ import { AccessRepository } from 'src/repositories/access.repository';
 import { TagRepository } from 'src/repositories/tag.repository';
 import { AssetRepository } from 'src/repositories/asset.repository';
 import { requireAccess, checkAccess } from 'src/utils/access';
+import { mapTag } from 'src/dtos/tag.dto';
+import { BadRequestException } from 'src/utils/errors';
 
 export class TagService {
   private tagRepository: TagRepository;
@@ -19,14 +21,14 @@ export class TagService {
   private assetRepository: AssetRepository;
 
   constructor(private ctx: ServiceContext) {
-    this.tagRepository = new TagRepository(ctx.db);
+    this.tagRepository = new TagRepository(ctx.db, ctx.env.DB);
     this.accessRepository = new AccessRepository(ctx.db);
     this.assetRepository = new AssetRepository(ctx.db);
   }
 
   async getAll(auth: AuthDto) {
     const tags = await this.tagRepository.getAll(auth.user.id);
-    return tags;
+    return tags.map((tag: any) => mapTag(tag));
   }
 
   async get(auth: AuthDto, id: string) {
@@ -36,7 +38,7 @@ export class TagService {
       ids: [id],
     });
     const tag = await this.findOrFail(id);
-    return tag;
+    return mapTag(tag as any);
   }
 
   async create(auth: AuthDto, dto: any) {
@@ -57,12 +59,12 @@ export class TagService {
     const value = parent ? `${parent.value}/${dto.name}` : dto.name;
     const duplicate = await this.tagRepository.getByValue(userId, value);
     if (duplicate) {
-      throw new Error('A tag with that name already exists');
+      throw new BadRequestException('A tag with that name already exists');
     }
 
     const { color } = dto;
     const tag = await this.tagRepository.create({ userId, value, color, parentId: parent?.id });
-    return tag;
+    return mapTag(tag as any);
   }
 
   async update(auth: AuthDto, id: string, dto: any) {
@@ -72,14 +74,21 @@ export class TagService {
       ids: [id],
     });
 
-    const { color } = dto;
-    const tag = await this.tagRepository.update(id, { color });
-    return tag;
+    const existing = await this.findOrFail(id);
+    const parts = existing.value.split('/');
+    if (dto.name) parts[parts.length - 1] = dto.name;
+    const value = parts.join('/');
+    const duplicate = await this.tagRepository.getByValue(auth.user.id, value);
+    if (duplicate && duplicate.id !== id) {
+      throw new BadRequestException('A tag with that name already exists');
+    }
+    const tag = await this.tagRepository.update(id, { value, color: dto.color });
+    return mapTag(tag as any);
   }
 
   async upsert(auth: AuthDto, dto: any) {
     const tags = await this.tagRepository.upsertTags({ userId: auth.user.id, tags: dto.tags });
-    return tags;
+    return tags.map((tag: any) => mapTag(tag));
   }
 
   async remove(auth: AuthDto, id: string): Promise<void> {
@@ -132,6 +141,7 @@ export class TagService {
         results.push({ id: assetId, success: false, error: 'no_permission' });
       } else {
         results.push({ id: assetId, success: true });
+        existingAssetIds.add(assetId);
         toAdd.push(assetId);
       }
     }
@@ -159,6 +169,7 @@ export class TagService {
         results.push({ id: assetId, success: false, error: 'not_found' });
       } else {
         results.push({ id: assetId, success: true });
+        existingAssetIds.delete(assetId);
         toRemove.push(assetId);
       }
     }

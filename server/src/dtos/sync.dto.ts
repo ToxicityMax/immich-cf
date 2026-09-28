@@ -13,6 +13,7 @@ import {
 } from 'src/enum';
 import { UserMetadata } from 'src/types';
 import { optionalBooleanQuery } from 'src/validation';
+import type { AssetEditAction } from 'src/dtos/editing.dto';
 
 // --- Request Schemas ---
 
@@ -31,12 +32,8 @@ export const AssetDeltaSyncSchema = z.object({
 export type AssetDeltaSyncDto = z.infer<typeof AssetDeltaSyncSchema>;
 
 export const SyncStreamSchema = z.object({
-  types: z.array(z.nativeEnum(SyncRequestType)).min(1),
-  reset: z.preprocess((val) => {
-    if (val === 'true' || val === true) return true;
-    if (val === 'false' || val === false) return false;
-    return val;
-  }, z.boolean().optional()),
+  types: z.array(z.nativeEnum(SyncRequestType)),
+  reset: z.boolean().optional(),
 });
 export type SyncStreamDto = z.infer<typeof SyncStreamSchema>;
 
@@ -47,7 +44,7 @@ export const SyncAckSchema = z.object({
 export type SyncAckDto = z.infer<typeof SyncAckSchema>;
 
 export const SyncAckSetSchema = z.object({
-  acks: z.array(z.string()).max(1000).min(1),
+  acks: z.array(z.string()).max(1000),
 });
 export type SyncAckSetDto = z.infer<typeof SyncAckSetSchema>;
 
@@ -122,6 +119,11 @@ export interface SyncAssetV1 {
   isEdited: boolean;
 }
 
+export interface SyncAssetV2 extends Omit<SyncAssetV1, 'duration'> {
+  createdAt: Date | null;
+  duration: number | null;
+}
+
 export interface SyncAssetDeleteV1 {
   assetId: string;
 }
@@ -154,6 +156,18 @@ export interface SyncAssetExifV1 {
   fps: number | null;
 }
 
+export interface SyncAssetEditV1 {
+  id: string;
+  assetId: string;
+  action: AssetEditAction;
+  parameters: Record<string, unknown>;
+  sequence: number;
+}
+
+export interface SyncAssetEditDeleteV1 {
+  editId: string;
+}
+
 export interface SyncAssetMetadataV1 {
   assetId: string;
   key: string;
@@ -183,6 +197,17 @@ export interface SyncAlbumUserV1 {
 export interface SyncAlbumV1 {
   id: string;
   ownerId: string;
+  name: string;
+  description: string;
+  createdAt: Date;
+  updatedAt: Date;
+  thumbnailAssetId: string | null;
+  isActivityEnabled: boolean;
+  order: AssetOrder;
+}
+
+export interface SyncAlbumV2 {
+  id: string;
   name: string;
   description: string;
   createdAt: Date;
@@ -299,23 +324,32 @@ export type SyncItem = {
   [SyncEntityType.PartnerV1]: SyncPartnerV1;
   [SyncEntityType.PartnerDeleteV1]: SyncPartnerDeleteV1;
   [SyncEntityType.AssetV1]: SyncAssetV1;
+  [SyncEntityType.AssetV2]: SyncAssetV2;
   [SyncEntityType.AssetDeleteV1]: SyncAssetDeleteV1;
   [SyncEntityType.AssetMetadataV1]: SyncAssetMetadataV1;
   [SyncEntityType.AssetMetadataDeleteV1]: SyncAssetMetadataDeleteV1;
   [SyncEntityType.AssetExifV1]: SyncAssetExifV1;
+  [SyncEntityType.AssetEditV1]: SyncAssetEditV1;
+  [SyncEntityType.AssetEditDeleteV1]: SyncAssetEditDeleteV1;
   [SyncEntityType.PartnerAssetV1]: SyncAssetV1;
+  [SyncEntityType.PartnerAssetV2]: SyncAssetV2;
   [SyncEntityType.PartnerAssetBackfillV1]: SyncAssetV1;
+  [SyncEntityType.PartnerAssetBackfillV2]: SyncAssetV2;
   [SyncEntityType.PartnerAssetDeleteV1]: SyncAssetDeleteV1;
   [SyncEntityType.PartnerAssetExifV1]: SyncAssetExifV1;
   [SyncEntityType.PartnerAssetExifBackfillV1]: SyncAssetExifV1;
   [SyncEntityType.AlbumV1]: SyncAlbumV1;
+  [SyncEntityType.AlbumV2]: SyncAlbumV2;
   [SyncEntityType.AlbumDeleteV1]: SyncAlbumDeleteV1;
   [SyncEntityType.AlbumUserV1]: SyncAlbumUserV1;
   [SyncEntityType.AlbumUserBackfillV1]: SyncAlbumUserV1;
   [SyncEntityType.AlbumUserDeleteV1]: SyncAlbumUserDeleteV1;
   [SyncEntityType.AlbumAssetCreateV1]: SyncAssetV1;
+  [SyncEntityType.AlbumAssetCreateV2]: SyncAssetV2;
   [SyncEntityType.AlbumAssetUpdateV1]: SyncAssetV1;
+  [SyncEntityType.AlbumAssetUpdateV2]: SyncAssetV2;
   [SyncEntityType.AlbumAssetBackfillV1]: SyncAssetV1;
+  [SyncEntityType.AlbumAssetBackfillV2]: SyncAssetV2;
   [SyncEntityType.AlbumAssetExifCreateV1]: SyncAssetExifV1;
   [SyncEntityType.AlbumAssetExifUpdateV1]: SyncAssetExifV1;
   [SyncEntityType.AlbumAssetExifBackfillV1]: SyncAssetExifV1;

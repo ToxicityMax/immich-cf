@@ -2,7 +2,7 @@
 
 ## Project Goal
 
-WorkersImmich is an experimental Cloudflare-native backend for Immich. It keeps the Immich v2.5.2 web client and API model while replacing the NestJS, PostgreSQL, filesystem, Redis, and Socket.IO server stack with Hono, D1, R2, KV, and Durable Objects.
+WorkersImmich is an experimental Cloudflare-native backend for Immich. It uses the Immich v3.2.2 web client and API model while replacing the NestJS, PostgreSQL, filesystem, Redis, and Socket.IO server stack with Hono, D1, R2, KV, and Durable Objects.
 
 The first engineering constraint is client compatibility. A route is not complete merely because it returns a successful response. Existing Immich web and mobile clients depend on exact paths, methods, permissions, status codes, response fields, nullability, date formats, event names, and sync semantics.
 
@@ -28,12 +28,12 @@ The active Worker path is:
 
 Many retained NestJS controllers, decorators, modules, upstream tests, and PostgreSQL-oriented files are not on the active Worker execution path. Do not infer feature support from those files. Do not modify them to implement Worker behavior unless the active Hono code imports them.
 
-The web application is under `web/` and uses `@immich/sdk` v2.5.2. There is no mobile application source in this repository, so mobile compatibility must be checked through API and sync contracts plus testing with an upstream client.
+The web application is under `web/` and uses `@immich/sdk` v3.2.2. There is no mobile application source in this repository, so mobile compatibility must be checked through API and sync contracts plus testing with an upstream client.
 
 ## Compatibility Rules
 
-- Treat Immich v2.5.2 as the current protocol baseline.
-- Compare client-visible changes with the matching upstream v2.5.2 controller, DTO, service, SDK call, and web usage.
+- Treat Immich v3.2.2 as the current protocol baseline.
+- Compare client-visible changes with the matching upstream v3.2.2 controller, DTO, service, SDK call, and web usage.
 - Preserve request and response field names, types, nullability, enum values, status codes, and error behavior.
 - Preserve Socket.IO event names, target scope, argument order, and payload shape.
 - Preserve sync entity names, checkpoint behavior, ordering, deletion records, and NDJSON framing.
@@ -85,7 +85,7 @@ Do not replace committed resource IDs with placeholders or local values.
 ## Development Workflow
 
 1. Identify whether the code is on the active Hono path.
-2. Find the equivalent Immich v2.5.2 contract and current web SDK usage.
+2. Find the equivalent Immich v3.2.2 contract and current web SDK usage.
 3. Make the smallest Worker-compatible change.
 4. Add or update a top-level Worker integration test.
 5. Run focused tests while iterating.

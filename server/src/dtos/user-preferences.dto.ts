@@ -16,6 +16,7 @@ const MemoriesUpdateSchema = z.object({
     return val;
   }, z.boolean().optional()),
   duration: z.number().int().positive().optional(),
+  sidebarWeb: optionalBooleanQuery,
 });
 
 const RatingsUpdateSchema = z.object({
@@ -54,6 +55,11 @@ const PeopleUpdateSchema = z.object({
     if (val === 'false' || val === false) return false;
     return val;
   }, z.boolean().optional()),
+  minimumFaces: z.number().int().min(1).optional(),
+});
+
+const RecentlyAddedUpdateSchema = z.object({
+  sidebarWeb: optionalBooleanQuery,
 });
 
 const SharedLinksUpdateSchema = z.object({
@@ -141,6 +147,7 @@ export const UserPreferencesUpdateSchema = z.object({
   download: DownloadUpdateSchema.optional(),
   purchase: PurchaseUpdateSchema.optional(),
   cast: CastUpdateSchema.optional(),
+  recentlyAdded: RecentlyAddedUpdateSchema.optional(),
 });
 export type UserPreferencesUpdateDto = z.infer<typeof UserPreferencesUpdateSchema>;
 
@@ -149,8 +156,8 @@ export type UserPreferencesUpdateDto = z.infer<typeof UserPreferencesUpdateSchem
 export interface UserPreferencesResponseDto {
   albums: { defaultAssetOrder: AssetOrder };
   folders: { enabled: boolean; sidebarWeb: boolean };
-  memories: { enabled: boolean; duration: number };
-  people: { enabled: boolean; sidebarWeb: boolean };
+  memories: { enabled: boolean; duration: number; sidebarWeb: boolean };
+  people: { enabled: boolean; sidebarWeb: boolean; minimumFaces: number };
   ratings: { enabled: boolean };
   sharedLinks: { enabled: boolean; sidebarWeb: boolean };
   tags: { enabled: boolean; sidebarWeb: boolean };
@@ -158,6 +165,7 @@ export interface UserPreferencesResponseDto {
   download: { archiveSize: number; includeEmbeddedVideos: boolean };
   purchase: { showSupportBadge: boolean; hideBuyButtonUntil: string };
   cast: { gCastEnabled: boolean };
+  recentlyAdded: { sidebarWeb: boolean };
 }
 
 // --- Mapper ---

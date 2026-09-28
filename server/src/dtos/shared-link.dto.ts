@@ -3,59 +3,65 @@ import { SharedLink } from 'src/database';
 import { AlbumResponseDto, mapAlbumWithoutAssets } from 'src/dtos/album.dto';
 import { AssetResponseDto, mapAsset } from 'src/dtos/asset-response.dto';
 import { SharedLinkType } from 'src/enum';
-import { optionalBooleanQuery } from 'src/validation';
 
 // --- Request Schemas ---
 
+const uuidV4 = z.string().uuid().refine((value) => value[14] === '4', { message: 'Invalid UUID v4' });
+
+export const SharedLinkIdSchema = z.object({ id: uuidV4 });
+
 export const SharedLinkSearchSchema = z.object({
-  albumId: z.string().uuid().optional(),
-  id: z.string().uuid().optional(),
+  albumId: uuidV4.optional(),
+  id: uuidV4.optional(),
 });
 export type SharedLinkSearchDto = z.infer<typeof SharedLinkSearchSchema>;
 
 export const SharedLinkCreateSchema = z.object({
   type: z.nativeEnum(SharedLinkType),
-  assetIds: z.array(z.string().uuid()).optional(),
-  albumId: z.string().uuid().optional(),
-  description: z.string().nullable().optional().transform((v) => (v === '' ? null : v)),
-  password: z.string().nullable().optional().transform((v) => (v === '' ? null : v)),
-  slug: z.string().nullable().optional().transform((v) => (v === '' ? null : v)),
-  expiresAt: z.coerce.date().nullable().optional().default(null),
-  allowUpload: z.preprocess((val) => {
-    if (val === 'true' || val === true) return true;
-    if (val === 'false' || val === false) return false;
-    return val;
-  }, z.boolean().optional()),
-  allowDownload: z.preprocess((val) => {
-    if (val === 'true' || val === true) return true;
-    if (val === 'false' || val === false) return false;
-    return val;
-  }, z.boolean().optional().default(true)),
-  showMetadata: z.preprocess((val) => {
-    if (val === 'true' || val === true) return true;
-    if (val === 'false' || val === false) return false;
-    return val;
-  }, z.boolean().optional().default(true)),
+  assetIds: z.array(uuidV4).optional(),
+  albumId: uuidV4.optional(),
+  description: z.string().nullable().optional(),
+  password: z.string().nullable().optional(),
+  slug: z.string().nullable().optional(),
+  expiresAt: z.string().datetime({ offset: true }).transform((value) => new Date(value)).nullable().optional().default(null),
+  allowUpload: z.boolean().optional(),
+  allowDownload: z.boolean().optional().default(true),
+  showMetadata: z.boolean().optional().default(true),
+}).superRefine(({ type, albumId, assetIds }, ctx) => {
+  if (type === SharedLinkType.Album) {
+    if (!albumId) {
+      ctx.addIssue({ code: 'custom', message: `albumId is required for type ${SharedLinkType.Album}` });
+    }
+    if (assetIds && assetIds.length > 0) {
+      ctx.addIssue({ code: 'custom', message: `assetIds can only be used with type ${SharedLinkType.Individual}` });
+    }
+    return;
+  }
+
+  if (!assetIds || assetIds.length === 0) {
+    ctx.addIssue({ code: 'custom', message: `assetIds are required for type ${SharedLinkType.Individual}` });
+  }
+  if (albumId) {
+    ctx.addIssue({ code: 'custom', message: `albumId can only be used with type ${SharedLinkType.Album}` });
+  }
 });
 export type SharedLinkCreateDto = z.infer<typeof SharedLinkCreateSchema>;
 
 export const SharedLinkEditSchema = z.object({
-  description: z.string().nullable().optional().transform((v) => (v === '' ? null : v)),
-  password: z.string().nullable().optional().transform((v) => (v === '' ? null : v)),
-  slug: z.string().nullable().optional().transform((v) => (v === '' ? null : v)),
-  expiresAt: z.coerce.date().nullable().optional(),
-  allowUpload: optionalBooleanQuery,
-  allowDownload: optionalBooleanQuery,
-  showMetadata: optionalBooleanQuery,
-  changeExpiryTime: optionalBooleanQuery,
+  description: z.string().nullable().optional(),
+  password: z.string().nullable().optional(),
+  slug: z.string().nullable().optional(),
+  expiresAt: z.string().datetime({ offset: true }).transform((value) => new Date(value)).nullish(),
+  allowUpload: z.boolean().optional(),
+  allowDownload: z.boolean().optional(),
+  showMetadata: z.boolean().optional(),
 });
 export type SharedLinkEditDto = z.infer<typeof SharedLinkEditSchema>;
 
-export const SharedLinkPasswordSchema = z.object({
-  password: z.string().optional(),
-  token: z.string().optional(),
+export const SharedLinkLoginSchema = z.object({
+  password: z.string(),
 });
-export type SharedLinkPasswordDto = z.infer<typeof SharedLinkPasswordSchema>;
+export type SharedLinkLoginDto = z.infer<typeof SharedLinkLoginSchema>;
 
 // --- Response DTOs (plain interfaces) ---
 
@@ -63,7 +69,6 @@ export interface SharedLinkResponseDto {
   id: string;
   description: string | null;
   password: string | null;
-  token?: string | null;
   userId: string;
   key: string;
   type: SharedLinkType;

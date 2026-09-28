@@ -51,11 +51,9 @@ app.post(
 
     // Parse DTO fields from form data
     const dto = {
-      deviceAssetId: String(body['deviceAssetId'] || ''),
-      deviceId: String(body['deviceId'] || ''),
       fileCreatedAt: body['fileCreatedAt'] ? new Date(String(body['fileCreatedAt'])) : new Date(),
       fileModifiedAt: body['fileModifiedAt'] ? new Date(String(body['fileModifiedAt'])) : new Date(),
-      duration: body['duration'] ? String(body['duration']) : undefined,
+      duration: body['duration'] ? Number(body['duration']) : undefined,
       filename: body['filename'] ? String(body['filename']) : undefined,
       isFavorite: body['isFavorite'] === 'true' || body['isFavorite'] === true,
       visibility: body['visibility'] ? String(body['visibility']) : undefined,
@@ -93,19 +91,6 @@ app.post(
 
     const status = result.status === 'duplicate' ? 200 : 201;
     return c.json(result, status as any);
-  },
-);
-
-// POST /api/assets/exist — Check existing assets
-app.post(
-  '/exist',
-  authMiddleware({ permission: Permission.AssetUpload }),
-  async (c) => {
-    const auth = c.get('auth');
-    const services = c.get('services');
-    const body = await c.req.json();
-    const result = await services.assetMedia.checkExistingAssets(auth, body);
-    return c.json(result);
   },
 );
 
@@ -152,39 +137,6 @@ app.get(
     return new Response(bodyBuffer, {
       headers: c.res.headers,
     });
-  },
-);
-
-// PUT /api/assets/:id/original — Replace asset
-app.put(
-  '/:id/original',
-  authMiddleware({ permission: Permission.AssetReplace, sharedLink: true }),
-  async (c) => {
-    const auth = c.get('auth');
-    const services = c.get('services');
-    const id = c.req.param('id');
-
-    const body = await c.req.parseBody({ all: true });
-    const assetData = body['assetData'];
-    if (!assetData || !(assetData instanceof File)) {
-      return c.json({ message: 'Missing assetData file' }, 400);
-    }
-
-    const fileData = await assetData.arrayBuffer();
-    const originalName = assetData.name;
-
-    const dto = {
-      deviceAssetId: String(body['deviceAssetId'] || ''),
-      deviceId: String(body['deviceId'] || ''),
-      fileCreatedAt: body['fileCreatedAt'] ? new Date(String(body['fileCreatedAt'])) : new Date(),
-      fileModifiedAt: body['fileModifiedAt'] ? new Date(String(body['fileModifiedAt'])) : new Date(),
-      duration: body['duration'] ? String(body['duration']) : undefined,
-    };
-
-    const result = await services.assetMedia.replaceAsset(auth, id, dto as any, fileData, originalName);
-
-    const status = result.status === 'duplicate' ? 200 : 200;
-    return c.json(result, status as any);
   },
 );
 
@@ -302,32 +254,6 @@ app.get(
 // ============================================================================
 // Asset CRUD routes
 // ============================================================================
-
-// GET /api/assets/random
-app.get(
-  '/random',
-  authMiddleware({ permission: Permission.AssetRead }),
-  async (c) => {
-    const auth = c.get('auth');
-    const services = c.get('services');
-    const count = c.req.query('count');
-    const result = await services.asset.getRandom(auth, count ? Number.parseInt(count, 10) : 1);
-    return c.json(result);
-  },
-);
-
-// GET /api/assets/device/:deviceId
-app.get(
-  '/device/:deviceId',
-  authMiddleware(),
-  async (c) => {
-    const auth = c.get('auth');
-    const services = c.get('services');
-    const deviceId = c.req.param('deviceId');
-    const result = await services.asset.getUserAssetsByDeviceId(auth, deviceId);
-    return c.json(result);
-  },
-);
 
 // GET /api/assets/statistics
 app.get(

@@ -8,6 +8,10 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
 import { Permission } from '../enum';
+import { validate } from '../middleware/validate';
+import { TagBulkAssetsSchema, TagCreateSchema, TagUpdateSchema, TagUpsertSchema } from '../dtos/tag.dto';
+import { BulkIdsSchema } from '../dtos/asset-ids.response.dto';
+import { UUIDParamSchema } from '../validation';
 
 const app = new Hono<AppEnv>();
 
@@ -15,12 +19,13 @@ const app = new Hono<AppEnv>();
 app.post(
   '/',
   authMiddleware({ permission: Permission.TagCreate }),
+  validate('json', TagCreateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.tag.create(auth, body);
-    return c.json(result);
+    return c.json(result, 201);
   },
 );
 
@@ -40,10 +45,11 @@ app.get(
 app.put(
   '/',
   authMiddleware({ permission: Permission.TagCreate }),
+  validate('json', TagUpsertSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.tag.upsert(auth, body);
     return c.json(result);
   },
@@ -53,10 +59,11 @@ app.put(
 app.put(
   '/assets',
   authMiddleware({ permission: Permission.TagAsset }),
+  validate('json', TagBulkAssetsSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.tag.bulkTagAssets(auth, body);
     return c.json(result);
   },
@@ -66,6 +73,7 @@ app.put(
 app.get(
   '/:id',
   authMiddleware({ permission: Permission.TagRead }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -79,11 +87,29 @@ app.get(
 app.put(
   '/:id',
   authMiddleware({ permission: Permission.TagUpdate }),
+  validate('param', UUIDParamSchema),
+  validate('json', TagUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
+    const result = await services.tag.update(auth, id, body);
+    return c.json(result);
+  },
+);
+
+// PATCH /api/tags/:id -- Update tag (v3)
+app.patch(
+  '/:id',
+  authMiddleware({ permission: Permission.TagUpdate }),
+  validate('param', UUIDParamSchema),
+  validate('json', TagUpdateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const services = c.get('services');
+    const id = c.req.param('id');
+    const body = c.req.valid('json');
     const result = await services.tag.update(auth, id, body);
     return c.json(result);
   },
@@ -93,6 +119,7 @@ app.put(
 app.delete(
   '/:id',
   authMiddleware({ permission: Permission.TagDelete }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -106,11 +133,13 @@ app.delete(
 app.put(
   '/:id/assets',
   authMiddleware({ permission: Permission.TagAsset }),
+  validate('param', UUIDParamSchema),
+  validate('json', BulkIdsSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.tag.addAssets(auth, id, body);
     return c.json(result);
   },
@@ -120,11 +149,13 @@ app.put(
 app.delete(
   '/:id/assets',
   authMiddleware({ permission: Permission.TagAsset }),
+  validate('param', UUIDParamSchema),
+  validate('json', BulkIdsSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.tag.removeAssets(auth, id, body);
     return c.json(result);
   },

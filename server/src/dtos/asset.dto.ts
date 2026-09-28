@@ -50,7 +50,7 @@ export const AssetBulkDeleteSchema = BulkIdsSchema.extend({
 export type AssetBulkDeleteDto = z.infer<typeof AssetBulkDeleteSchema>;
 
 export const AssetIdsSchema = z.object({
-  assetIds: z.array(z.string().uuid()).min(1),
+  assetIds: z.array(z.string().uuid().refine((value) => value[14] === '4', { message: 'Invalid UUID v4' })),
 });
 export type AssetIdsDto = z.infer<typeof AssetIdsSchema>;
 

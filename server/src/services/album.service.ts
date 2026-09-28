@@ -11,7 +11,7 @@ import {
   mapAlbumWithAssets,
   mapAlbumWithoutAssets,
 } from 'src/dtos/album.dto';
-import { Permission } from 'src/enum';
+import { AlbumUserRole, Permission } from 'src/enum';
 import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
 import { AlbumRepository } from 'src/repositories/album.repository';
@@ -26,7 +26,7 @@ export class AlbumService {
   private userRepository: UserRepository;
 
   constructor(private ctx: ServiceContext) {
-    this.albumRepository = new AlbumRepository(ctx.db);
+    this.albumRepository = new AlbumRepository(ctx.db, ctx.env.DB);
     this.albumUserRepository = new AlbumUserRepository(ctx.db);
     this.accessRepository = new AccessRepository(ctx.db);
     this.userRepository = new UserRepository(ctx.db);
@@ -46,8 +46,8 @@ export class AlbumService {
     };
   }
 
-  async getAll(auth: AuthDto, dto: { assetId?: string; shared?: boolean }) {
-    const { assetId, shared } = dto;
+  async getAll(auth: AuthDto, dto: { assetId?: string; isOwned?: boolean; isShared?: boolean }) {
+    const { assetId, ...options } = dto;
     const ownerId = auth.user.id;
 
     await this.albumRepository.updateThumbnails();
@@ -55,12 +55,8 @@ export class AlbumService {
     let albums: any[];
     if (assetId) {
       albums = await this.albumRepository.getByAssetId(ownerId, assetId);
-    } else if (shared === true) {
-      albums = await this.albumRepository.getShared(ownerId);
-    } else if (shared === false) {
-      albums = await this.albumRepository.getNotShared(ownerId);
     } else {
-      albums = await this.albumRepository.getOwned(ownerId);
+      albums = await this.albumRepository.getAll(ownerId, options);
     }
 
     const results = await this.albumRepository.getMetadataForIds(albums.map((a: any) => a.id));
@@ -106,15 +102,16 @@ export class AlbumService {
   }
 
   async create(auth: AuthDto, dto: any) {
-    const albumUsers = dto.albumUsers || [];
+    const albumUsers = [...new Map(
+      (dto.albumUsers || [])
+        .filter(({ userId }: { userId: string }) => userId !== auth.user.id)
+        .map((albumUser: { userId: string; role: string }) => [albumUser.userId, albumUser]),
+    ).values()] as Array<{ userId: string; role: string }>;
 
     for (const { userId } of albumUsers) {
       const exists = await this.userRepository.get(userId, {});
       if (!exists) {
         throw new Error('User not found');
-      }
-      if (userId === auth.user.id) {
-        throw new Error('Cannot share album with owner');
       }
     }
 
@@ -128,14 +125,13 @@ export class AlbumService {
     const album = await this.albumRepository.create(
       {
         id: crypto.randomUUID(),
-        ownerId: auth.user.id,
         albumName: dto.albumName || 'Untitled',
-        description: dto.description || '',
+        description: dto.description === '' ? null : dto.description ?? null,
         albumThumbnailAssetId: assetIds[0] || null,
         order: 'desc',
       },
       assetIds,
-      albumUsers,
+      [{ userId: auth.user.id, role: AlbumUserRole.Owner }, ...albumUsers],
     );
 
     return mapAlbumWithAssets(this.normalizeAlbum(album));
@@ -216,6 +212,7 @@ export class AlbumService {
         updatedAt: new Date().toISOString(),
         albumThumbnailAssetId: album.albumThumbnailAssetId ?? toAdd[0],
       });
+      await this.emitAlbumUpdate(id);
     }
 
     return results;
@@ -267,6 +264,7 @@ export class AlbumService {
         updatedAt: new Date().toISOString(),
         albumThumbnailAssetId: album.albumThumbnailAssetId ?? notPresentAssetIds[0],
       });
+      await this.emitAlbumUpdate(albumId);
     }
 
     await this.albumRepository.addAssetIdsToAlbums(albumAssetValues);
@@ -300,6 +298,7 @@ export class AlbumService {
       if (album.albumThumbnailAssetId && toRemove.includes(album.albumThumbnailAssetId)) {
         await this.albumRepository.updateThumbnails();
       }
+      await this.emitAlbumUpdate(id);
     }
 
     return results;
@@ -315,8 +314,8 @@ export class AlbumService {
     const album = await this.findOrFail(id, { withAssets: false });
 
     for (const { userId, role } of dto.albumUsers) {
-      if (album.ownerId === userId) {
-        throw new Error('Cannot be shared with owner');
+      if (role === AlbumUserRole.Owner) {
+        throw new Error('Cannot add another owner');
       }
 
       const exists = album.albumUsers?.find((au: any) => au.user?.id === userId || au.userId === userId);
@@ -329,7 +328,7 @@ export class AlbumService {
         throw new Error('User not found');
       }
 
-      await this.albumUserRepository.create({ userId, albumId: id, role: role || 'viewer' });
+      await this.albumUserRepository.create({ userId, albumId: id, role: role || AlbumUserRole.Editor });
     }
 
     const updatedAlbum = await this.findOrFail(id, { withAssets: true });
@@ -343,13 +342,16 @@ export class AlbumService {
 
     const album = await this.findOrFail(id, { withAssets: false });
 
-    if (album.ownerId === userId) {
-      throw new Error('Cannot remove album owner');
-    }
-
     const exists = album.albumUsers?.find((au: any) => au.user?.id === userId || au.userId === userId);
     if (!exists) {
       throw new Error('Album not shared with user');
+    }
+
+    if (
+      exists.role === AlbumUserRole.Owner &&
+      album.albumUsers.filter(({ role }: { role: string }) => role === AlbumUserRole.Owner).length === 1
+    ) {
+      throw new Error('Cannot remove the last album owner');
     }
 
     if (auth.user.id !== userId) {
@@ -369,6 +371,14 @@ export class AlbumService {
       permission: Permission.AlbumShare,
       ids: [id],
     });
+    const album = await this.findOrFail(id, { withAssets: false });
+    const albumUser = album.albumUsers.find((entry: any) => entry.userId === userId);
+    if (!albumUser) {
+      throw new Error('Album not shared with user');
+    }
+    if (albumUser.role === AlbumUserRole.Owner || dto.role === AlbumUserRole.Owner) {
+      throw new Error('User is owner');
+    }
     await this.albumUserRepository.update({ albumId: id, userId }, { role: dto.role });
   }
 
@@ -378,6 +388,15 @@ export class AlbumService {
       throw new Error('Album not found');
     }
     return album;
+  }
+
+  private async emitAlbumUpdate(albumId: string): Promise<void> {
+    const users = await this.ctx.db
+      .selectFrom('album_user')
+      .select('userId')
+      .where('albumId', '=', albumId)
+      .execute();
+    await this.ctx.realtime.sendUsers(users.map(({ userId }) => userId), 'on_album_update', albumId);
   }
 
   private normalizeAlbum(album: any) {

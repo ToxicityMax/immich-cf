@@ -1,33 +1,36 @@
+import { render } from '@testing-library/svelte';
 import { getIntersectionObserverMock } from '$lib/__mocks__/intersection-observer.mock';
-import Thumbnail from '$lib/components/assets/thumbnail/thumbnail.svelte';
+import Thumbnail from '$lib/components/assets/thumbnail/Thumbnail.svelte';
 import { getTabbable } from '$lib/utils/focus-util';
 import { assetFactory } from '@test-data/factories/asset-factory';
-import { render } from '@testing-library/svelte';
+
+vi.mock('$lib/utils/navigation', () => ({
+  currentUrlReplaceAssetId: vi.fn(),
+  isSharedLinkRoute: vi.fn().mockReturnValue(false),
+}));
 
 vi.hoisted(() => {
   Object.defineProperty(globalThis, 'matchMedia', {
     writable: true,
     enumerable: true,
-    value: vi.fn().mockImplementation((query) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addListener: vi.fn(), // deprecated
-      removeListener: vi.fn(), // deprecated
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })),
+    value: vi.fn().mockImplementation(function (query) {
+      return {
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(), // deprecated
+        removeListener: vi.fn(), // deprecated
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      };
+    }),
   });
 });
 
 describe('Thumbnail component', () => {
   beforeAll(() => {
     vi.stubGlobal('IntersectionObserver', getIntersectionObserverMock());
-    vi.mock('$lib/utils/navigation', () => ({
-      currentUrlReplaceAssetId: vi.fn(),
-      isSharedLinkRoute: vi.fn().mockReturnValue(false),
-    }));
   });
 
   it('should only contain a single tabbable element (the container)', () => {

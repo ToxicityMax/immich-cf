@@ -13,8 +13,7 @@
  *   - Version nibble: 7 (UUIDv7)
  *   - Remaining bits: random (from crypto.randomUUID)
  */
-export function generateUUIDv7(): string {
-  const timestamp = Date.now();
+export function generateUUIDv7(timestamp = Date.now()): string {
   const uuid = crypto.randomUUID();
 
   // Embed timestamp in the first 48 bits (12 hex chars) for time-ordering

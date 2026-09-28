@@ -58,7 +58,7 @@ describe('Locked folder security', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assetIds: [assetId, stackChildId] }),
     });
-    expect(stackRes.status).toBe(200);
+    expect(stackRes.status).toBe(201);
     const stack = (await stackRes.json()) as any;
 
     const pathsBeforeLockRes = await authRequest('/api/view/folder/unique-paths', token);
@@ -79,7 +79,7 @@ describe('Locked folder security', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'INDIVIDUAL', assetIds: [assetId] }),
     });
-    expect(linkRes.status).toBe(200);
+    expect(linkRes.status).toBe(201);
     const link = (await linkRes.json()) as any;
     expect(link.key).toBeTypeOf('string');
 
@@ -200,7 +200,7 @@ describe('Locked folder security', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'INDIVIDUAL', assetIds: [parentId] }),
     });
-    expect(linkRes.status).toBe(200);
+    expect(linkRes.status).toBe(201);
     const link = (await linkRes.json()) as any;
 
     const lockTargetRes = await authRequest(`/api/assets/${targetId}`, token, {
@@ -223,39 +223,39 @@ describe('Locked folder security', () => {
   it('should create and merge large stacks within D1 bind limits', async () => {
     const { token } = await createTestAdmin();
     const seedId = await uploadTestAsset(token);
-    const cloneIds = Array.from({ length: 99 }, () => crypto.randomUUID());
+    const cloneIds = Array.from({ length: 100 }, () => crypto.randomUUID());
 
     await env.DB.batch(
       cloneIds.map((id, index) =>
         env.DB.prepare(`
           INSERT INTO asset (
-            id, deviceAssetId, ownerId, deviceId, type, originalPath,
+            id, ownerId, type, originalPath,
             fileCreatedAt, fileModifiedAt, checksum, localDateTime, originalFileName
           )
-          SELECT ?, ?, ownerId, deviceId, type, ?, fileCreatedAt, fileModifiedAt,
+          SELECT ?, ownerId, type, ?, fileCreatedAt, fileModifiedAt,
                  randomblob(20), localDateTime, originalFileName
           FROM asset WHERE id = ?
-        `).bind(id, `stack-device-${index}`, `stack/${id}.jpg`, seedId),
+        `).bind(id, `stack/${id}.jpg`, seedId),
       ),
     );
 
-    const firstAssetIds = [seedId, ...cloneIds.slice(0, 98)];
+    const firstAssetIds = [seedId, ...cloneIds.slice(0, 99)];
     const firstStackRes = await authRequest('/api/stacks', token, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assetIds: firstAssetIds }),
     });
-    expect(firstStackRes.status).toBe(200);
+    expect(firstStackRes.status).toBe(201);
     const firstStack = (await firstStackRes.json()) as any;
-    expect(firstStack.assets).toHaveLength(99);
+    expect(firstStack.assets).toHaveLength(100);
 
     const mergedStackRes = await authRequest('/api/stacks', token, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assetIds: [seedId, cloneIds[98]] }),
+      body: JSON.stringify({ assetIds: [seedId, cloneIds[99]] }),
     });
-    expect(mergedStackRes.status).toBe(200);
-    expect(((await mergedStackRes.json()) as any).assets).toHaveLength(100);
+    expect(mergedStackRes.status).toBe(201);
+    expect(((await mergedStackRes.json()) as any).assets).toHaveLength(101);
     expect((await authRequest(`/api/stacks/${firstStack.id}`, token)).status).toBe(400);
   });
 
@@ -294,7 +294,7 @@ describe('Locked folder security', () => {
         limit: 100,
       }),
     });
-    expect(fullSyncRes.status).toBe(400);
+    expect(fullSyncRes.status).toBe(404);
 
     const deltaSyncRes = await authRequest('/api/sync/delta-sync', adminToken, {
       method: 'POST',
@@ -304,8 +304,7 @@ describe('Locked folder security', () => {
         updatedAfter: new Date().toISOString(),
       }),
     });
-    expect(deltaSyncRes.status).toBe(200);
-    expect(await deltaSyncRes.json()).toEqual({ needsFullSync: true, deleted: [], upserted: [] });
+    expect(deltaSyncRes.status).toBe(404);
   });
 
   it('should not expose password or PIN hashes in user-bearing responses', async () => {
@@ -325,7 +324,7 @@ describe('Locked folder security', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sharedWithId: user.id }),
     });
-    expect(partnerRes.status).toBe(200);
+    expect(partnerRes.status).toBe(201);
     const partner = (await partnerRes.json()) as any;
     expect(partner).not.toHaveProperty('password');
     expect(partner).not.toHaveProperty('pinCode');
@@ -340,8 +339,8 @@ describe('Locked folder security', () => {
     });
     expect(albumRes.status).toBe(200);
     const album = (await albumRes.json()) as any;
-    expect(album.owner).not.toHaveProperty('password');
-    expect(album.owner).not.toHaveProperty('pinCode');
+    expect(album).not.toHaveProperty('owner');
+    expect(album.albumUsers[0]).toMatchObject({ role: 'owner' });
     expect(album.albumUsers[0].user).not.toHaveProperty('password');
     expect(album.albumUsers[0].user).not.toHaveProperty('pinCode');
 
@@ -360,11 +359,11 @@ describe('Locked folder security', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'ALBUM', albumId: album.id }),
     });
-    expect(linkRes.status).toBe(200);
+    expect(linkRes.status).toBe(201);
     const link = (await linkRes.json()) as any;
     const getLinkRes = await authRequest(`/api/shared-links/${link.id}`, adminToken);
     expect(getLinkRes.status).toBe(200);
-    const linkedAlbumOwner = ((await getLinkRes.json()) as any).album.owner;
+    const linkedAlbumOwner = ((await getLinkRes.json()) as any).album.albumUsers[0].user;
     expect(linkedAlbumOwner).not.toHaveProperty('password');
     expect(linkedAlbumOwner).not.toHaveProperty('pinCode');
   });

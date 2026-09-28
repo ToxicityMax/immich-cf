@@ -51,9 +51,16 @@ export class ServerVersionResponseDto {
   major!: number;
   minor!: number;
   patch!: number;
+  prerelease!: number | null;
 
   static fromSemVer(value: SemVer) {
-    return { major: value.major, minor: value.minor, patch: value.patch };
+    const prerelease = value.prerelease[0];
+    return {
+      major: value.major,
+      minor: value.minor,
+      patch: value.patch,
+      prerelease: typeof prerelease === 'number' ? prerelease : null,
+    };
   }
 }
 
@@ -89,10 +96,6 @@ export interface ServerMediaTypesResponseDto {
   sidecar: string[];
 }
 
-export interface ServerThemeDto {
-  customCss: string;
-}
-
 export interface ServerConfigDto {
   oauthButtonText: string;
   loginPageMessage: string;
@@ -104,6 +107,7 @@ export interface ServerConfigDto {
   publicUsers: boolean;
   mapDarkStyleUrl: string;
   mapLightStyleUrl: string;
+  minFaces: number;
   maintenanceMode: boolean;
 }
 
@@ -119,6 +123,7 @@ export interface ServerFeaturesDto {
   oauth: boolean;
   oauthAutoLaunch: boolean;
   passwordLogin: boolean;
+  realtimeTranscoding: boolean;
   sidecar: boolean;
   search: boolean;
   email: boolean;

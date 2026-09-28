@@ -139,10 +139,12 @@ export type UserPreferences = {
   memories: {
     enabled: boolean;
     duration: number;
+    sidebarWeb: boolean;
   };
   people: {
     enabled: boolean;
     sidebarWeb: boolean;
+    minimumFaces: number;
   };
   ratings: {
     enabled: boolean;
@@ -170,6 +172,9 @@ export type UserPreferences = {
   };
   cast: {
     gCastEnabled: boolean;
+  };
+  recentlyAdded: {
+    sidebarWeb: boolean;
   };
 };
 

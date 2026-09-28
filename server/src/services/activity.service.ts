@@ -12,6 +12,7 @@ import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
 import { ActivityRepository } from 'src/repositories/activity.repository';
 import { requireAccess } from 'src/utils/access';
+import { generateUUIDv7 } from 'src/utils/uuid';
 
 export class ActivityService {
   private activityRepository: ActivityRepository;
@@ -84,7 +85,7 @@ export class ActivityService {
         ...common,
         isLiked: dto.type === 'like' ? 1 : 0,
         comment: dto.comment ?? null,
-        updateId: this.ctx.crypto.randomUUID(),
+        updateId: generateUUIDv7(),
       });
     }
 

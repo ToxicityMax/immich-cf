@@ -24,6 +24,7 @@ describe('Users', () => {
       expect(body.name).toBe('Test Admin');
       expect(body).toHaveProperty('isAdmin');
       expect(body.isAdmin).toBe(true);
+      expect(body.clusterGroupId).toBe(body.id);
     });
 
     it('should reject unauthenticated request', async () => {
@@ -86,10 +87,12 @@ describe('Users', () => {
       expect(body).toHaveProperty('download');
       expect(body).toHaveProperty('purchase');
       expect(body).toHaveProperty('cast');
+      expect(body).toHaveProperty('recentlyAdded');
 
       // Verify people section has the fields the frontend accesses
       expect(body.people).toHaveProperty('enabled');
       expect(body.people).toHaveProperty('sidebarWeb');
+      expect(body.people).toHaveProperty('minimumFaces');
       expect(typeof body.people.enabled).toBe('boolean');
       expect(typeof body.people.sidebarWeb).toBe('boolean');
 
@@ -108,6 +111,8 @@ describe('Users', () => {
       // Verify memories section
       expect(body.memories).toHaveProperty('enabled');
       expect(body.memories).toHaveProperty('duration');
+      expect(body.memories).toHaveProperty('sidebarWeb');
+      expect(body.recentlyAdded).toEqual({ sidebarWeb: false });
     });
   });
 

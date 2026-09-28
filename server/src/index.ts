@@ -25,6 +25,9 @@ import systemMetadataRoutes from './routes/system-metadata';
 import apiKeyRoutes from './routes/api-keys';
 import viewRoutes from './routes/view';
 import authRoutes from './routes/auth';
+import publicConfigRoutes from './routes/public-config';
+import userConfigRoutes from './routes/config-user';
+import adminConfigRoutes from './routes/config-admin';
 import sessionRoutes from './routes/sessions';
 import { handleSocketIO } from './routes/socket';
 import { authMiddleware } from './middleware/auth';
@@ -88,6 +91,9 @@ app.route('/api/assets', assetRoutes);
 app.route('/api/download', downloadRoutes);
 app.route('/api/memories', memoryRoutes);
 app.route('/api/partners', partnerRoutes);
+app.route('/api/public', publicConfigRoutes);
+app.route('/api/config', userConfigRoutes);
+app.route('/api/admin/config', adminConfigRoutes);
 app.route('/api/search', searchRoutes);
 app.route('/api/server', serverRoutes);
 app.route('/api/sessions', sessionRoutes);
@@ -110,12 +116,17 @@ app.get('/.well-known/immich', (c) => {
 });
 
 app.get('/custom.css', (c) => {
-  // TODO: Load custom CSS from system config (CP-3)
-  return c.body('', 200, { 'Content-Type': 'text/css' });
+  return c.get('services').systemConfig.getCustomCss().then((css) =>
+    c.body(css, 200, { 'Content-Type': 'text/css; charset=utf-8' }),
+  );
 });
 
 // Fallback to static assets
 app.all('*', async (c) => {
+  if (c.req.path === '/api' || c.req.path.startsWith('/api/')) {
+    return c.json({ message: 'Not Found', statusCode: 404 }, 404);
+  }
+
   return c.env.ASSETS.fetch(c.req.raw);
 });
 

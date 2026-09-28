@@ -73,13 +73,18 @@ class ActivityAccess {
       this.db
         .selectFrom('activity')
         .select('activity.id')
-        .leftJoin('album', (join) =>
+        .innerJoin('album', (join) =>
           join
             .onRef('activity.albumId', '=', 'album.id')
             .on('album.deletedAt', 'is', null),
         )
+        .innerJoin('album_user', (join) =>
+          join
+            .onRef('album_user.albumId', '=', 'album.id')
+            .on('album_user.userId', '=', userId)
+            .on('album_user.role', '=', AlbumUserRole.Owner),
+        )
         .where('activity.id', 'in', [...ids])
-        .where('album.ownerId', '=', userId)
         .execute()
         .then((rows) => new Set(rows.map((r) => r.id))),
     );
@@ -100,12 +105,7 @@ class ActivityAccess {
         )
         .where('album.id', 'in', [...ids])
         .where('album.isActivityEnabled', '=', 1)
-        .where((eb) =>
-          eb.or([
-            eb('album.ownerId', '=', userId),
-            eb('user.id', '=', userId),
-          ]),
-        )
+        .where('user.id', '=', userId)
         .where('album.deletedAt', 'is', null)
         .execute()
         .then((rows) => new Set(rows.map((r) => r.id))),
@@ -121,10 +121,12 @@ class AlbumAccess {
 
     return chunkedCheck(albumIds, async (ids) =>
       this.db
-        .selectFrom('album')
+        .selectFrom('album_user')
+        .innerJoin('album', 'album.id', 'album_user.albumId')
         .select('album.id')
         .where('album.id', 'in', [...ids])
-        .where('album.ownerId', '=', userId)
+        .where('album_user.userId', '=', userId)
+        .where('album_user.role', '=', AlbumUserRole.Owner)
         .where('album.deletedAt', 'is', null)
         .execute()
         .then((rows) => new Set(rows.map((r) => r.id))),
@@ -222,10 +224,7 @@ class AssetAccess {
           ]),
         )
         .where((eb) =>
-          eb.or([
-            eb('album.ownerId', '=', userId),
-            eb('user.id', '=', userId),
-          ]),
+          eb('user.id', '=', userId),
         )
         .where('album.deletedAt', 'is', null)
         .execute();

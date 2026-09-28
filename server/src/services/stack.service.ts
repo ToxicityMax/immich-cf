@@ -13,6 +13,7 @@ import { StackRepository } from 'src/repositories/stack.repository';
 import { AssetRepository } from 'src/repositories/asset.repository';
 import { requireAccess } from 'src/utils/access';
 import { NotFoundException } from 'src/utils/errors';
+import { mapStack } from 'src/dtos/stack.dto';
 
 export class StackService {
   private stackRepository: StackRepository;
@@ -30,7 +31,7 @@ export class StackService {
       ownerId: auth.user.id,
       primaryAssetId: dto.primaryAssetId,
     }, !!auth.session?.hasElevatedPermission);
-    return stacks;
+    return stacks.map((stack: any) => mapStack(stack, { auth }));
   }
 
   async create(auth: AuthDto, dto: any) {
@@ -46,7 +47,7 @@ export class StackService {
       !!auth.session?.hasElevatedPermission,
     );
     await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_stack_update');
-    return stack;
+    return mapStack(stack as any, { auth });
   }
 
   async get(auth: AuthDto, id: string) {
@@ -56,7 +57,7 @@ export class StackService {
       ids: [id],
     });
     const stack = await this.findOrFail(id, !!auth.session?.hasElevatedPermission);
-    return stack;
+    return mapStack(stack as any, { auth });
   }
 
   async update(auth: AuthDto, id: string, dto: any) {
@@ -77,7 +78,7 @@ export class StackService {
       includeLocked,
     );
     await this.ctx.realtime.sendUser(auth.user.id, 'on_asset_stack_update');
-    return updatedStack;
+    return mapStack(updatedStack as any, { auth });
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {

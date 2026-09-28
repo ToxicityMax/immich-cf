@@ -1,8 +1,7 @@
-import { CastDestinationType, CastState, type ICastDestination } from '$lib/managers/cast-manager.svelte';
-import { preferences } from '$lib/stores/user.store';
 import 'chromecast-caf-sender';
 import { Duration } from 'luxon';
-import { get } from 'svelte/store';
+import { authManager } from '$lib/managers/auth-manager.svelte';
+import { CastDestinationType, CastState, type ICastDestination } from '$lib/managers/cast-manager.svelte';
 
 const FRAMEWORK_LINK = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
 
@@ -26,8 +25,7 @@ export class GCastDestination implements ICastDestination {
   private currentUrl: string | null = null;
 
   async initialize(): Promise<boolean> {
-    const preferencesStore = get(preferences);
-    if (!preferencesStore || !preferencesStore.cast.gCastEnabled) {
+    if (!authManager.authenticated || !authManager.preferences.cast.gCastEnabled) {
       this.isAvailable = false;
       return false;
     }
@@ -43,11 +41,12 @@ export class GCastDestination implements ICastDestination {
         return;
       }
 
+      // eslint-disable-next-line unicorn/no-global-object-property-assignment
       window['__onGCastApiAvailable'] = (isAvailable: boolean) => {
         resolve(isAvailable);
       };
 
-      if (!document.querySelector(`script[src="${FRAMEWORK_LINK}"]`)) {
+      if (!document.querySelector(`script[src="${CSS.escape(FRAMEWORK_LINK)}"]`)) {
         const script = document.createElement('script');
         script.src = FRAMEWORK_LINK;
         document.body.append(script);
@@ -115,12 +114,17 @@ export class GCastDestination implements ICastDestination {
     // build the authenticated media request and send it to the cast device
     const authenticatedUrl = `${mediaUrl}&sessionKey=${sessionKey}`;
     const mediaInfo = new chrome.cast.media.MediaInfo(authenticatedUrl, contentType);
-    const request = new chrome.cast.media.LoadRequest(mediaInfo);
+
+    // Create a queue with a single item and set it to repeat
+    const queueItem = new chrome.cast.media.QueueItem(mediaInfo);
+    const queueLoadRequest = new chrome.cast.media.QueueLoadRequest([queueItem]);
+    queueLoadRequest.repeatMode = chrome.cast.media.RepeatMode.SINGLE;
+
     const successCallback = this.onMediaDiscovered.bind(this, SESSION_DISCOVERY_CAUSE.LOAD_MEDIA);
 
     this.currentUrl = mediaUrl;
 
-    return this.session.loadMedia(request, successCallback, this.onError.bind(this));
+    return this.session.queueLoad(queueLoadRequest, successCallback, this.onError.bind(this));
   }
 
   ///
@@ -168,6 +172,7 @@ export class GCastDestination implements ICastDestination {
   ///
   private onSessionStateChanged(event: cast.framework.SessionStateEventData) {
     switch (event.sessionState) {
+      case cast.framework.SessionState.NO_SESSION:
       case cast.framework.SessionState.SESSION_ENDED: {
         this.session = null;
         break;
@@ -177,6 +182,11 @@ export class GCastDestination implements ICastDestination {
         this.session = event.session.getSessionObj();
         break;
       }
+      case cast.framework.SessionState.SESSION_START_FAILED: {
+        console.error('Google Cast failed to start session:', event.errorCode);
+        break;
+      }
+      // no default
     }
   }
 

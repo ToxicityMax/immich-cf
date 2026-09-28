@@ -19,10 +19,12 @@ app.get(
     const auth = c.get('auth');
     const services = c.get('services');
     const assetId = c.req.query('assetId');
-    const shared = c.req.query('shared');
+    const isOwned = c.req.query('isOwned');
+    const isShared = c.req.query('isShared');
     const dto = {
       assetId,
-      shared: shared === 'true' ? true : shared === 'false' ? false : undefined,
+      isOwned: isOwned === 'true' ? true : isOwned === 'false' ? false : undefined,
+      isShared: isShared === 'true' ? true : isShared === 'false' ? false : undefined,
     };
     const result = await services.album.getAll(auth, dto);
     return c.json(result);

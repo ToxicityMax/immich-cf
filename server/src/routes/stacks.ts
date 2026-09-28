@@ -8,6 +8,10 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
 import { Permission } from '../enum';
+import { validate } from '../middleware/validate';
+import { StackCreateSchema, StackSearchSchema, StackUpdateSchema } from '../dtos/stack.dto';
+import { BulkIdsSchema } from '../dtos/asset-ids.response.dto';
+import { UUIDAssetIDParamSchema, UUIDParamSchema } from '../validation';
 
 const app = new Hono<AppEnv>();
 
@@ -15,11 +19,11 @@ const app = new Hono<AppEnv>();
 app.get(
   '/',
   authMiddleware({ permission: Permission.StackRead }),
+  validate('query', StackSearchSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const primaryAssetId = c.req.query('primaryAssetId');
-    const dto = { primaryAssetId };
+    const dto = c.req.valid('query');
     const result = await services.stack.search(auth, dto);
     return c.json(result);
   },
@@ -29,12 +33,13 @@ app.get(
 app.post(
   '/',
   authMiddleware({ permission: Permission.StackCreate }),
+  validate('json', StackCreateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.stack.create(auth, body);
-    return c.json(result);
+    return c.json(result, 201);
   },
 );
 
@@ -42,10 +47,11 @@ app.post(
 app.delete(
   '/',
   authMiddleware({ permission: Permission.StackDelete }),
+  validate('json', BulkIdsSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     await services.stack.deleteAll(auth, body);
     return c.body(null, 204);
   },
@@ -55,6 +61,7 @@ app.delete(
 app.get(
   '/:id',
   authMiddleware({ permission: Permission.StackRead }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -68,11 +75,13 @@ app.get(
 app.put(
   '/:id',
   authMiddleware({ permission: Permission.StackUpdate }),
+  validate('param', UUIDParamSchema),
+  validate('json', StackUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.stack.update(auth, id, body);
     return c.json(result);
   },
@@ -82,6 +91,7 @@ app.put(
 app.delete(
   '/:id',
   authMiddleware({ permission: Permission.StackDelete }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -95,6 +105,7 @@ app.delete(
 app.delete(
   '/:id/assets/:assetId',
   authMiddleware({ permission: Permission.StackUpdate }),
+  validate('param', UUIDAssetIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');

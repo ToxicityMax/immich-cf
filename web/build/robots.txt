@@ -1,8 +1,0 @@
-# Allow social media access og Tags
-User-agent: *
-Allow: /share/
-Allow: /api/assets/
-
-# https://www.robotstxt.org/robotstxt.html
-User-agent: *
-Disallow: /

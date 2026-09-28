@@ -115,8 +115,6 @@ export async function uploadTestAsset(token: string, unique = ''): Promise<strin
   const formData = new FormData();
   const fileParts: BlobPart[] = unique ? [image, new TextEncoder().encode(unique)] : [image];
   formData.append('assetData', new File(fileParts, `test${unique ? `-${unique}` : ''}.jpg`, { type: 'image/jpeg' }));
-  formData.append('deviceAssetId', `test-device-asset-${unique || '1'}`);
-  formData.append('deviceId', 'test-device-1');
   formData.append('fileCreatedAt', new Date().toISOString());
   formData.append('fileModifiedAt', new Date().toISOString());
 

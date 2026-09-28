@@ -9,25 +9,20 @@
 
 import type { AuthDto } from 'src/dtos/auth.dto';
 import {
-  AssetDeltaSyncDto,
-  AssetDeltaSyncResponseDto,
-  AssetFullSyncDto,
   SyncAckDeleteDto,
   SyncAckSetDto,
   SyncStreamDto,
 } from 'src/dtos/sync.dto';
-import { mapAsset, AssetResponseDto } from 'src/dtos/asset-response.dto';
 import {
-  AssetVisibility,
-  Permission,
+  AlbumUserRole,
   SyncEntityType,
   SyncRequestType,
 } from 'src/enum';
 import type { ServiceContext } from 'src/context';
-import { fromAck, mapSyncAssetV1, serialize, toAck } from 'src/utils/sync';
+import { sql } from 'kysely';
+import { fromAck, mapSyncAssetExifV1, mapSyncAssetV2, serialize, toAck } from 'src/utils/sync';
 import { ForbiddenException, BadRequestException } from 'src/utils/errors';
-import { AccessRepository } from 'src/repositories/access.repository';
-import { requireAccess } from 'src/utils/access';
+import { generateUUIDv7 } from 'src/utils/uuid';
 
 type SyncAck = {
   type: SyncEntityType;
@@ -42,32 +37,44 @@ type SyncWriter = {
   abort: (err: any) => Promise<void>;
 };
 
-const COMPLETE_ID = 'complete';
 const MAX_DAYS = 30;
+const PAGE_SIZE = 1000;
+const COMPLETE_ID = 'complete';
 
-const FULL_SYNC = { needsFullSync: true, deleted: [], upserted: [] };
+const isEntityBackfillComplete = (createId: string, checkpoint: SyncAck | undefined) =>
+  createId === checkpoint?.updateId && checkpoint.extraId === COMPLETE_ID;
+
+const getBackfillStartId = (createId: string, checkpoint: SyncAck | undefined) =>
+  createId === checkpoint?.updateId && checkpoint.extraId !== COMPLETE_ID ? checkpoint.extraId : undefined;
 
 export const SYNC_TYPES_ORDER = [
   SyncRequestType.AuthUsersV1,
   SyncRequestType.UsersV1,
   SyncRequestType.PartnersV1,
   SyncRequestType.AssetsV1,
+  SyncRequestType.AssetsV2,
   SyncRequestType.StacksV1,
   SyncRequestType.PartnerAssetsV1,
+  SyncRequestType.PartnerAssetsV2,
   SyncRequestType.PartnerStacksV1,
   SyncRequestType.AlbumAssetsV1,
+  SyncRequestType.AlbumAssetsV2,
   SyncRequestType.AlbumsV1,
+  SyncRequestType.AlbumsV2,
   SyncRequestType.AlbumUsersV1,
   SyncRequestType.AlbumToAssetsV1,
   SyncRequestType.AssetExifsV1,
   SyncRequestType.AlbumAssetExifsV1,
+  SyncRequestType.AssetOcrV1,
   SyncRequestType.PartnerAssetExifsV1,
   SyncRequestType.MemoriesV1,
   SyncRequestType.MemoryToAssetsV1,
   SyncRequestType.PeopleV1,
   SyncRequestType.AssetFacesV1,
+  SyncRequestType.AssetFacesV2,
   SyncRequestType.UserMetadataV1,
   SyncRequestType.AssetMetadataV1,
+  SyncRequestType.AssetEditsV1,
 ];
 
 /**
@@ -87,15 +94,11 @@ function createJsonLinesStream(): SyncWriter & { readable: ReadableStream<Uint8A
 }
 
 export class SyncService {
-  private accessRepository: AccessRepository;
-
   private get db() {
     return this.ctx.db;
   }
 
-  constructor(private ctx: ServiceContext) {
-    this.accessRepository = new AccessRepository(ctx.db);
-  }
+  constructor(private ctx: ServiceContext) {}
 
   async getAcks(auth: AuthDto) {
     const sessionId = auth.session?.id;
@@ -105,7 +108,7 @@ export class SyncService {
 
     return this.db
       .selectFrom('session_sync_checkpoint')
-      .selectAll()
+      .select(['type', 'ack'])
       .where('sessionId', '=', sessionId)
       .execute();
   }
@@ -119,21 +122,17 @@ export class SyncService {
     console.log(`[sync] setAcks: sessionId=${sessionId}, acks=${JSON.stringify(dto.acks)}`);
 
     const checkpoints: Record<string, { sessionId: string; type: string; ack: string }> = {};
+    let hasReset = false;
     for (const ack of dto.acks) {
-      const { type } = fromAck(ack);
+      const parsed = fromAck(ack);
+      const { type, updateId } = parsed;
+      if (!updateId || ack.split('|').length > 3) {
+        throw new BadRequestException(`Invalid ack: ${ack}`);
+      }
+
       if (type === SyncEntityType.SyncResetV1) {
-        console.log(`[sync] setAcks: processing SyncResetV1 ack, clearing isPendingSyncReset for session=${sessionId}`);
-        // Clear the pending reset flag and delete checkpoints so next stream returns actual data
-        await this.db
-          .updateTable('session')
-          .set({ isPendingSyncReset: 0 })
-          .where('id', '=', sessionId)
-          .execute();
-        await this.db
-          .deleteFrom('session_sync_checkpoint')
-          .where('sessionId', '=', sessionId)
-          .execute();
-        return;
+        hasReset = true;
+        continue;
       }
 
       if (!Object.values(SyncEntityType).includes(type as SyncEntityType)) {
@@ -143,23 +142,26 @@ export class SyncService {
       checkpoints[type] = { sessionId, type, ack };
     }
 
-    for (const cp of Object.values(checkpoints)) {
-      await this.db
-        .insertInto('session_sync_checkpoint')
-        .values({
-          sessionId: cp.sessionId,
-          type: cp.type,
-          ack: cp.ack,
-          updateId: crypto.randomUUID(),
-        })
-        .onConflict((oc) =>
-          oc.columns(['sessionId', 'type']).doUpdateSet({
-            ack: cp.ack,
-            updatedAt: new Date().toISOString(),
-            updateId: crypto.randomUUID(),
-          }),
-        )
-        .execute();
+    if (hasReset) {
+      if (dto.acks.length !== 1) {
+        throw new BadRequestException('SyncResetV1 cannot be acknowledged with other checkpoints');
+      }
+      console.log(`[sync] setAcks: processing SyncResetV1 ack, clearing isPendingSyncReset for session=${sessionId}`);
+      await this.resetSyncProgress(sessionId);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const statements = Object.values(checkpoints).map((cp) => this.ctx.env.DB.prepare(`
+      INSERT INTO session_sync_checkpoint (sessionId, type, ack, updateId)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT (sessionId, type) DO UPDATE SET
+        ack = excluded.ack,
+        updatedAt = ?,
+        updateId = ?
+    `).bind(cp.sessionId, cp.type, cp.ack, generateUUIDv7(), now, generateUUIDv7()));
+    if (statements.length > 0) {
+      await this.ctx.env.DB.batch(statements);
     }
 
     console.log(`[sync] setAcks: stored ${Object.keys(checkpoints).length} checkpoints`);
@@ -197,6 +199,13 @@ export class SyncService {
       throw new ForbiddenException('Sync endpoints cannot be used with API keys');
     }
 
+    const deprecated = dto.types.find((type) =>
+      [SyncRequestType.AssetsV1, SyncRequestType.PartnerAssetsV1, SyncRequestType.AlbumAssetsV1, SyncRequestType.AssetFacesV1].includes(type),
+    );
+    if (deprecated) {
+      throw new BadRequestException(`Sync request type ${deprecated} is no longer supported`);
+    }
+
     const startTime = Date.now();
     console.log(`[sync] stream: sessionId=${session.id}, userId=${auth.user.id}, types=[${dto.types.join(',')}], reset=${dto.reset ?? false}`);
 
@@ -206,16 +215,8 @@ export class SyncService {
     const processSync = async () => {
       try {
         if (dto.reset) {
-          console.log(`[sync] stream: reset requested, setting isPendingSyncReset=1 and clearing checkpoints`);
-          await this.db
-            .updateTable('session')
-            .set({ isPendingSyncReset: 1 })
-            .where('id', '=', session.id)
-            .execute();
-          await this.db
-            .deleteFrom('session_sync_checkpoint')
-            .where('sessionId', '=', session.id)
-            .execute();
+          console.log(`[sync] stream: reset requested, clearing reset state and checkpoints`);
+          await this.resetSyncProgress(session.id);
         }
 
         // Check if pending sync reset
@@ -256,7 +257,7 @@ export class SyncService {
           return;
         }
 
-        const nowId = this.generateTimestampId();
+        const nowId = generateUUIDv7(Date.now() - 1);
         let totalItemsStreamed = 0;
 
         // Process requested sync types in order
@@ -280,155 +281,137 @@ export class SyncService {
     processSync();
 
     return new Response(stream.readable, {
-      headers: { 'Content-Type': 'application/x-ndjson' },
+      headers: { 'Content-Type': 'application/jsonlines+json' },
     });
-  }
-
-  /**
-   * Legacy full-sync endpoint (deprecated but functional).
-   */
-  async getFullSync(auth: AuthDto, dto: AssetFullSyncDto): Promise<AssetResponseDto[]> {
-    const userId = dto.userId || auth.user.id;
-    await requireAccess(this.accessRepository, {
-      auth,
-      permission: Permission.TimelineRead,
-      ids: [userId],
-    });
-
-    console.log(`[sync] getFullSync: userId=${userId}, limit=${dto.limit}, lastId=${dto.lastId ?? 'none'}`);
-
-    const updatedUntil = dto.updatedUntil instanceof Date
-      ? dto.updatedUntil.toISOString()
-      : String(dto.updatedUntil);
-
-    let query = this.db
-      .selectFrom('asset')
-      .selectAll()
-      .where('asset.ownerId', '=', userId)
-      .where('asset.visibility', '!=', AssetVisibility.Hidden)
-      .$if(userId !== auth.user.id, (qb) =>
-        qb.where('asset.visibility', '=', AssetVisibility.Timeline),
-      )
-      .where('asset.updatedAt', '<=', updatedUntil)
-      .orderBy('asset.id', 'asc')
-      .limit(dto.limit);
-
-    if (dto.lastId) {
-      query = query.where('asset.id', '>', dto.lastId);
-    }
-
-    const assets = await query.execute();
-    console.log(`[sync] getFullSync: returning ${assets.length} assets`);
-    return assets.map((a: any) => mapAsset(a, { auth, stripMetadata: false, withStack: true }));
-  }
-
-  /**
-   * Legacy delta-sync endpoint (deprecated but functional).
-   */
-  async getDeltaSync(auth: AuthDto, dto: AssetDeltaSyncDto): Promise<AssetDeltaSyncResponseDto> {
-    const updatedAfter = dto.updatedAfter instanceof Date
-      ? dto.updatedAfter
-      : new Date(dto.updatedAfter);
-
-    console.log(`[sync] getDeltaSync: userIds=[${dto.userIds.join(',')}], updatedAfter=${updatedAfter.toISOString()}`);
-
-    // Check if sync is too old
-    const daysSinceSync = (Date.now() - updatedAfter.getTime()) / (1000 * 60 * 60 * 24);
-    if (daysSinceSync > 100) {
-      console.log(`[sync] getDeltaSync: sync too old (${Math.round(daysSinceSync)} days), returning needsFullSync`);
-      return FULL_SYNC;
-    }
-
-    const updatedAfterIso = updatedAfter.toISOString();
-
-    const partners = await this.db
-      .selectFrom('partner')
-      .select('sharedById')
-      .where('sharedWithId', '=', auth.user.id)
-      .execute();
-    const userIds = [auth.user.id, ...partners.map((partner) => partner.sharedById)];
-    const requestedUserIds = new Set(dto.userIds);
-    if (
-      requestedUserIds.size !== userIds.length ||
-      userIds.some((userId) => !requestedUserIds.has(userId))
-    ) {
-      return FULL_SYNC;
-    }
-
-    await requireAccess(this.accessRepository, {
-      auth,
-      permission: Permission.TimelineRead,
-      ids: userIds,
-    });
-
-    // Get changed assets
-    const limit = 10_000;
-    const upserted = await this.db
-      .selectFrom('asset')
-      .selectAll()
-      .where('asset.ownerId', 'in', userIds)
-      .where('asset.visibility', '!=', AssetVisibility.Hidden)
-      .where('asset.updatedAt', '>', updatedAfterIso)
-      .orderBy('asset.updatedAt', 'asc')
-      .limit(limit)
-      .execute();
-
-    if (upserted.length === limit) {
-      console.log(`[sync] getDeltaSync: hit limit (${limit}), returning needsFullSync`);
-      return FULL_SYNC;
-    }
-
-    // Get deleted assets from audit table
-    const deleted = await this.db
-      .selectFrom('asset_audit')
-      .select('asset_audit.assetId')
-      .where('asset_audit.ownerId', 'in', userIds)
-      .where('asset_audit.deletedAt', '>', updatedAfterIso)
-      .execute();
-
-    const result = {
-      needsFullSync: false,
-      upserted: upserted
-        .filter(
-          (a: any) =>
-            a.ownerId === auth.user.id ||
-            (a.ownerId !== auth.user.id && a.visibility === AssetVisibility.Timeline),
-        )
-        .map((a: any) =>
-          mapAsset(a, {
-            auth,
-            stripMetadata: false,
-            withStack: a.ownerId === auth.user.id,
-          }),
-        ),
-      deleted: deleted.map((d) => d.assetId),
-    };
-
-    console.log(`[sync] getDeltaSync: returning ${result.upserted.length} upserted, ${result.deleted.length} deleted`);
-    return result;
   }
 
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  /**
-   * Generate a UUID v7-compatible ID where the first 48 bits encode the
-   * current millisecond timestamp.  This is required so that needsFullSync()
-   * can extract a meaningful date from the SyncCompleteV1 ack.
-   */
-  private generateTimestampId(): string {
-    const now = Date.now();
-    const hex = now.toString(16).padStart(12, '0');
-    const rand = crypto.randomUUID().replace(/-/g, '').slice(12);
-    const full = hex + rand;
-    return [
-      full.slice(0, 8),
-      full.slice(8, 12),
-      full.slice(12, 16),
-      full.slice(16, 20),
-      full.slice(20, 32),
-    ].join('-');
+  private async resetSyncProgress(sessionId: string): Promise<void> {
+    await this.ctx.env.DB.batch([
+      this.ctx.env.DB.prepare('UPDATE session SET isPendingSyncReset = 0 WHERE id = ?').bind(sessionId),
+      this.ctx.env.DB.prepare('DELETE FROM session_sync_checkpoint WHERE sessionId = ?').bind(sessionId),
+    ]);
+  }
+
+  private async streamPages(
+    fetchPage: (afterId?: string) => Promise<any[]>,
+    getId: (row: any) => string,
+    writeRow: (row: any) => Promise<void>,
+  ): Promise<number> {
+    let afterId: string | undefined;
+    let count = 0;
+
+    while (true) {
+      const rows = await fetchPage(afterId);
+      for (const row of rows) {
+        await writeRow(row);
+      }
+      count += rows.length;
+
+      if (rows.length < PAGE_SIZE) {
+        return count;
+      }
+
+      const nextId = getId(rows.at(-1));
+      if (!nextId || nextId === afterId) {
+        throw new Error('Sync keyset pagination did not advance');
+      }
+      afterId = nextId;
+    }
+  }
+
+  private async setBackfillComplete(sessionId: string, type: SyncEntityType, createId: string): Promise<void> {
+    const ack = toAck({ type, updateId: createId, extraId: COMPLETE_ID });
+    await this.db
+      .insertInto('session_sync_checkpoint')
+      .values({ sessionId, type, ack, updateId: generateUUIDv7() })
+      .onConflict((oc) => oc.columns(['sessionId', 'type']).doUpdateSet({
+        ack,
+        updatedAt: new Date().toISOString(),
+        updateId: generateUUIDv7(),
+      }))
+      .execute();
+  }
+
+  private async sendBackfillComplete(stream: SyncWriter, type: SyncEntityType, createId: string): Promise<void> {
+    await stream.write(serialize({
+      type: SyncEntityType.SyncAckV1,
+      ackType: type,
+      ids: [createId, COMPLETE_ID],
+      data: {},
+    }));
+  }
+
+  private mapSharedAsset(row: any, userId: string) {
+    return mapSyncAssetV2({ ...row, isFavorite: row.ownerId === userId ? row.isFavorite : false });
+  }
+
+  private mapStack(row: any) {
+    return {
+      id: row.id,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      primaryAssetId: row.primaryAssetId,
+      ownerId: row.ownerId,
+    };
+  }
+
+  private getPartnerBackfillRelations(userId: string, nowId: string, checkpoint?: SyncAck) {
+    return this.db.selectFrom('partner').select(['sharedById as id', 'createId'])
+      .where('sharedWithId', '=', userId)
+      .where('createId', '<', nowId)
+      .$if(!!checkpoint, (query) => query.where('createId', '>=', checkpoint!.updateId))
+      .orderBy('createId', 'asc')
+      .execute();
+  }
+
+  private getAlbumBackfillRelations(userId: string, nowId: string, checkpoint?: SyncAck) {
+    return this.db.selectFrom('album_user').select(['albumId as id', 'createId'])
+      .where('userId', '=', userId)
+      .where('createId', '<', nowId)
+      .$if(!!checkpoint, (query) => query.where('createId', '>=', checkpoint!.updateId))
+      .orderBy('createId', 'asc')
+      .execute();
+  }
+
+  private async syncEntityBackfills(options: {
+    stream: SyncWriter;
+    checkpointMap: CheckpointMap;
+    backfillType: SyncEntityType;
+    upsertType: SyncEntityType;
+    sessionId: string;
+    relations: { id: string; createId: string }[];
+    fetchPage: (relationId: string, cursor: string | undefined, endId: string) => Promise<any[]>;
+    mapRow: (row: any) => any;
+  }): Promise<number> {
+    const { stream, checkpointMap, backfillType, upsertType, sessionId, relations, fetchPage, mapRow } = options;
+    const backfillCheckpoint = checkpointMap[backfillType];
+    const upsertCheckpoint = checkpointMap[upsertType];
+    let count = 0;
+
+    if (upsertCheckpoint) {
+      for (const relation of relations) {
+        if (isEntityBackfillComplete(relation.createId, backfillCheckpoint)) continue;
+        const startId = getBackfillStartId(relation.createId, backfillCheckpoint);
+        count += await this.streamPages(
+          (afterId) => fetchPage(relation.id, afterId ?? startId, upsertCheckpoint.updateId),
+          (row) => row.updateId,
+          async (row) => stream.write(serialize({
+            type: backfillType as any,
+            ids: [relation.createId, row.updateId],
+            data: mapRow(row),
+          } as any)),
+        );
+        await this.sendBackfillComplete(stream, backfillType, relation.createId);
+      }
+    } else if (relations.length > 0) {
+      await this.setBackfillComplete(sessionId, backfillType, relations.at(-1)!.createId);
+    }
+
+    return count;
   }
 
   private needsFullSync(checkpointMap: CheckpointMap): boolean {
@@ -437,8 +420,7 @@ export class SyncService {
       return false;
     }
 
-    // Extract timestamp from the updateId (first 12 hex chars = millisecond timestamp)
-    // Works with both UUID v7 format and our trigger-generated hex timestamp format
+    // Extract the millisecond timestamp from the first 48 bits of the UUIDv7.
     const hexStr = completeAck.updateId.replaceAll('-', '').slice(0, 12);
     const milliseconds = Number.parseInt(hexStr, 16);
     const ackDate = new Date(milliseconds);
@@ -462,11 +444,12 @@ export class SyncService {
     stream: SyncWriter,
   ): Promise<number> {
     const userId = auth.user.id;
+    const includeLocked = !!auth.session?.hasElevatedPermission;
     let count = 0;
 
     switch (type) {
       case SyncRequestType.AuthUsersV1:
-        count = await this.syncSimpleUpsert(stream, 'user', SyncEntityType.AuthUserV1, checkpointMap, {
+        count = await this.syncSimpleUpsert(stream, 'user', SyncEntityType.AuthUserV1, checkpointMap, nowId, {
           ownerFilter: userId,
           ownerColumn: 'id',
           mapRow: (row: any) => ({
@@ -478,7 +461,7 @@ export class SyncService {
             hasProfileImage: !!row.profileImagePath,
             profileChangedAt: row.profileChangedAt,
             isAdmin: Boolean(row.isAdmin),
-            pinCode: row.pinCode,
+            pinCode: row.pinCode ? 'configured' : null,
             oauthId: row.oauthId ?? '',
             storageLabel: row.storageLabel,
             quotaSizeInBytes: row.quotaSizeInBytes,
@@ -489,11 +472,11 @@ export class SyncService {
 
       case SyncRequestType.UsersV1:
         // Deletes
-        count += await this.syncAuditDeletes(stream, 'user_audit', SyncEntityType.UserDeleteV1, checkpointMap, {
+        count += await this.syncAuditDeletes(stream, 'user_audit', SyncEntityType.UserDeleteV1, checkpointMap, nowId, {
           mapRow: (row: any) => ({ userId: row.userId }),
         });
         // Upserts
-        count += await this.syncSimpleUpsert(stream, 'user', SyncEntityType.UserV1, checkpointMap, {
+        count += await this.syncSimpleUpsert(stream, 'user', SyncEntityType.UserV1, checkpointMap, nowId, {
           mapRow: (row: any) => ({
             id: row.id,
             name: row.name,
@@ -507,13 +490,18 @@ export class SyncService {
         break;
 
       case SyncRequestType.PartnersV1:
-        count += await this.syncAuditDeletes(stream, 'partner_audit', SyncEntityType.PartnerDeleteV1, checkpointMap, {
-          ownerFilter: userId,
+        count += await this.syncAuditDeletes(stream, 'partner_audit', SyncEntityType.PartnerDeleteV1, checkpointMap, nowId, {
+          filterQuery: (query) => query.where((eb: any) => eb.or([
+            eb('sharedById', '=', userId),
+            eb('sharedWithId', '=', userId),
+          ])),
           mapRow: (row: any) => ({ sharedById: row.sharedById, sharedWithId: row.sharedWithId }),
         });
-        count += await this.syncSimpleUpsert(stream, 'partner', SyncEntityType.PartnerV1, checkpointMap, {
-          ownerFilter: userId,
-          ownerColumn: 'sharedWithId',
+        count += await this.syncSimpleUpsert(stream, 'partner', SyncEntityType.PartnerV1, checkpointMap, nowId, {
+          filterQuery: (query) => query.where((eb: any) => eb.or([
+            eb('sharedById', '=', userId),
+            eb('sharedWithId', '=', userId),
+          ])),
           mapRow: (row: any) => ({
             sharedById: row.sharedById,
             sharedWithId: row.sharedWithId,
@@ -522,71 +510,131 @@ export class SyncService {
         });
         break;
 
-      case SyncRequestType.AssetsV1:
-        count += await this.syncAuditDeletes(stream, 'asset_audit', SyncEntityType.AssetDeleteV1, checkpointMap, {
-          ownerFilter: userId,
+      case SyncRequestType.AssetsV2:
+        count += await this.syncAuditDeletes(stream, 'asset_audit', SyncEntityType.AssetDeleteV1, checkpointMap, nowId, {
+          filterQuery: (query) => query.where((eb: any) => eb.or([
+            eb.and([
+              eb('ownerId', '=', userId),
+              includeLocked
+                ? eb('reason', '!=', 'lock')
+                : eb.or([
+                  ...(checkpointMap[SyncEntityType.AssetV2] ? [eb('reason', '=', 'lock')] : []),
+                  eb.and([
+                    eb('reason', '!=', 'lock'),
+                    eb.or([eb('visibility', '!=', 'locked'), eb('visibility', 'is', null)]),
+                  ]),
+                ]),
+            ]),
+            eb.and([
+              eb('ownerId', '!=', userId),
+              eb('reason', '=', 'lock'),
+              eb.exists(
+                this.db.selectFrom('album_asset_audit as known_album_asset')
+                  .innerJoin('album_user as known_album_user', (join) => join
+                    .onRef('known_album_user.albumId', '=', 'known_album_asset.albumId')
+                    .on('known_album_user.userId', '=', userId),
+                  )
+                  .select('known_album_asset.assetId')
+                  .whereRef('known_album_asset.assetId', '=', 'asset_audit.assetId')
+                  .where('known_album_asset.visibility', '=', 'locked')
+                  .where('known_album_asset.relationUpdateId', 'is not', null)
+                  .where((scope) => this.wasAlbumRelationSynced(
+                    scope,
+                    'known_album_asset.relationUpdateId',
+                    'known_album_user.createId',
+                    checkpointMap[SyncEntityType.AlbumAssetCreateV2],
+                    checkpointMap[SyncEntityType.AlbumAssetBackfillV2],
+                  )),
+              ),
+            ]),
+          ])),
           mapRow: (row: any) => ({ assetId: row.assetId }),
         });
-        count += await this.syncSimpleUpsert(stream, 'asset', SyncEntityType.AssetV1, checkpointMap, {
+        count += await this.syncSimpleUpsert(stream, 'asset', SyncEntityType.AssetV2, checkpointMap, nowId, {
           ownerFilter: userId,
-          mapRow: (row: any) => mapSyncAssetV1(row),
+          filterQuery: (query) => includeLocked ? query : query.where('visibility', '!=', 'locked'),
+          mapRow: (row: any) => mapSyncAssetV2(row),
         });
         break;
 
       case SyncRequestType.AssetExifsV1:
-        count = await this.syncExifUpserts(stream, SyncEntityType.AssetExifV1, checkpointMap, userId);
+        count = await this.syncExifUpserts(stream, SyncEntityType.AssetExifV1, checkpointMap, nowId, userId, includeLocked);
         break;
 
       case SyncRequestType.StacksV1:
-        count += await this.syncAuditDeletes(stream, 'stack_audit', SyncEntityType.StackDeleteV1, checkpointMap, {
+        count += await this.syncAuditDeletes(stream, 'stack_audit', SyncEntityType.StackDeleteV1, checkpointMap, nowId, {
           ownerFilter: userId,
           ownerColumn: 'userId',
+          filterQuery: (query) => includeLocked ? query : query.where((eb: any) => eb.or([
+            eb('visibility', '!=', 'locked'),
+            eb('visibility', 'is', null),
+          ])),
           mapRow: (row: any) => ({ stackId: row.stackId }),
         });
-        count += await this.syncSimpleUpsert(stream, 'stack', SyncEntityType.StackV1, checkpointMap, {
-          ownerFilter: userId,
-          mapRow: (row: any) => ({
-            id: row.id,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt,
-            primaryAssetId: row.primaryAssetId,
-            ownerId: row.ownerId,
-          }),
-        });
+        count += await this.syncStackUpserts(stream, checkpointMap, nowId, userId, includeLocked);
         break;
 
       case SyncRequestType.AlbumsV1:
-        count += await this.syncAuditDeletes(stream, 'album_audit', SyncEntityType.AlbumDeleteV1, checkpointMap, {
+        count += await this.syncAuditDeletes(stream, 'album_audit', SyncEntityType.AlbumDeleteV1, checkpointMap, nowId, {
           ownerFilter: userId,
           ownerColumn: 'userId',
           mapRow: (row: any) => ({ albumId: row.albumId }),
         });
-        count += await this.syncAlbumUpserts(stream, checkpointMap, userId);
+        count += await this.syncAlbumUpserts(stream, SyncEntityType.AlbumV1, checkpointMap, nowId, userId);
+        break;
+
+      case SyncRequestType.AlbumsV2:
+        count += await this.syncAuditDeletes(stream, 'album_audit', SyncEntityType.AlbumDeleteV1, checkpointMap, nowId, {
+          ownerFilter: userId,
+          ownerColumn: 'userId',
+          mapRow: (row: any) => ({ albumId: row.albumId }),
+        });
+        count += await this.syncAlbumUpserts(stream, SyncEntityType.AlbumV2, checkpointMap, nowId, userId);
         break;
 
       case SyncRequestType.AlbumUsersV1:
-        count += await this.syncAuditDeletes(stream, 'album_user_audit', SyncEntityType.AlbumUserDeleteV1, checkpointMap, {
-          ownerFilter: userId,
-          ownerColumn: 'userId',
+        count += await this.syncAuditDeletes(stream, 'album_user_audit', SyncEntityType.AlbumUserDeleteV1, checkpointMap, nowId, {
+          filterQuery: (query) => query.where('albumId', 'in',
+            this.db.selectFrom('album_user').select('albumId').where('userId', '=', userId),
+          ),
           mapRow: (row: any) => ({ albumId: row.albumId, userId: row.userId }),
         });
-        count += await this.syncAlbumUserUpserts(stream, checkpointMap, userId);
+        count += await this.syncAlbumUsers(stream, checkpointMap, nowId, userId, auth.session!.id);
         break;
 
       case SyncRequestType.AlbumToAssetsV1:
-        count += await this.syncAuditDeletes(stream, 'album_asset_audit', SyncEntityType.AlbumToAssetDeleteV1, checkpointMap, {
+        count += await this.syncAuditDeletes(stream, 'album_asset_audit', SyncEntityType.AlbumToAssetDeleteV1, checkpointMap, nowId, {
+          filterQuery: (query) => query.where('albumId', 'in',
+            this.db.selectFrom('album_user').select('albumId').where('userId', '=', userId),
+          ).where((eb: any) => eb.or([
+            eb('visibility', '!=', 'locked'),
+            eb('visibility', 'is', null),
+            eb.exists(
+              this.db.selectFrom('album_user as known_album_user')
+                .select('known_album_user.albumId')
+                .whereRef('known_album_user.albumId', '=', 'album_asset_audit.albumId')
+                .where('known_album_user.userId', '=', userId)
+                .where((scope) => this.wasAlbumRelationSynced(
+                  scope,
+                  'album_asset_audit.relationUpdateId',
+                  'known_album_user.createId',
+                  checkpointMap[SyncEntityType.AlbumToAssetV1],
+                  checkpointMap[SyncEntityType.AlbumToAssetBackfillV1],
+                )),
+            ),
+          ])),
           mapRow: (row: any) => ({ albumId: row.albumId, assetId: row.assetId }),
         });
-        count += await this.syncAlbumToAssetUpserts(stream, checkpointMap, userId);
+        count += await this.syncAlbumToAssets(stream, checkpointMap, nowId, userId, auth.session!.id, includeLocked);
         break;
 
       case SyncRequestType.MemoriesV1:
-        count += await this.syncAuditDeletes(stream, 'memory_audit', SyncEntityType.MemoryDeleteV1, checkpointMap, {
+        count += await this.syncAuditDeletes(stream, 'memory_audit', SyncEntityType.MemoryDeleteV1, checkpointMap, nowId, {
           ownerFilter: userId,
           ownerColumn: 'userId',
           mapRow: (row: any) => ({ memoryId: row.memoryId }),
         });
-        count += await this.syncSimpleUpsert(stream, 'memory', SyncEntityType.MemoryV1, checkpointMap, {
+        count += await this.syncSimpleUpsert(stream, 'memory', SyncEntityType.MemoryV1, checkpointMap, nowId, {
           ownerFilter: userId,
           mapRow: (row: any) => ({
             id: row.id,
@@ -606,23 +654,33 @@ export class SyncService {
         break;
 
       case SyncRequestType.MemoryToAssetsV1:
-        count += await this.syncAuditDeletes(stream, 'memory_asset_audit', SyncEntityType.MemoryToAssetDeleteV1, checkpointMap, {
+        count += await this.syncAuditDeletes(stream, 'memory_asset_audit', SyncEntityType.MemoryToAssetDeleteV1, checkpointMap, nowId, {
+          filterQuery: (query) => query.where('memoryId', 'in',
+            this.db.selectFrom('memory').select('id').where('ownerId', '=', userId),
+          ).$if(!includeLocked, (qb: any) => qb.where((eb: any) => eb.or([
+            eb('visibility', '!=', 'locked'),
+            eb('visibility', 'is', null),
+          ]))),
           mapRow: (row: any) => ({ memoryId: row.memoryId, assetId: row.assetId }),
         });
-        count += await this.syncMemoryAssetUpserts(stream, checkpointMap, userId);
+        count += await this.syncMemoryAssetUpserts(stream, checkpointMap, nowId, userId, includeLocked);
         break;
 
       case SyncRequestType.UserMetadataV1:
-        count += await this.syncAuditDeletes(stream, 'user_metadata_audit', SyncEntityType.UserMetadataDeleteV1, checkpointMap, {
+        count += await this.syncAuditDeletes(stream, 'user_metadata_audit', SyncEntityType.UserMetadataDeleteV1, checkpointMap, nowId, {
           ownerFilter: userId,
           ownerColumn: 'userId',
           mapRow: (row: any) => ({ userId: row.userId, key: row.key }),
         });
-        count += await this.syncUserMetadataUpserts(stream, checkpointMap, userId);
+        count += await this.syncUserMetadataUpserts(stream, checkpointMap, nowId, userId);
         break;
 
       case SyncRequestType.AssetMetadataV1:
-        count = await this.syncAssetMetadata(stream, checkpointMap, auth);
+        count = await this.syncAssetMetadata(stream, checkpointMap, nowId, auth);
+        break;
+
+      case SyncRequestType.AssetEditsV1:
+        count = await this.syncAssetEdits(stream, checkpointMap, nowId, userId, includeLocked);
         break;
 
       // Stubbed sync types (features removed in Workers)
@@ -630,17 +688,29 @@ export class SyncService {
         // People feature removed -- return empty
         break;
       case SyncRequestType.AssetFacesV1:
-        // Face recognition removed -- return empty
+        throw new BadRequestException('Sync request type AssetFacesV1 is no longer supported');
+      case SyncRequestType.AssetFacesV2:
+      case SyncRequestType.AssetOcrV1:
         break;
 
-      // Partner-related types -- simplified stubs
       case SyncRequestType.PartnerAssetsV1:
+        throw new BadRequestException('Sync request type PartnerAssetsV1 is no longer supported');
+      case SyncRequestType.PartnerAssetsV2:
+        count = await this.syncPartnerAssets(stream, checkpointMap, nowId, userId, auth.session!.id);
+        break;
       case SyncRequestType.PartnerAssetExifsV1:
+        count = await this.syncPartnerAssetExifs(stream, checkpointMap, nowId, userId, auth.session!.id);
+        break;
       case SyncRequestType.PartnerStacksV1:
+        count = await this.syncPartnerStacks(stream, checkpointMap, nowId, userId, auth.session!.id);
+        break;
       case SyncRequestType.AlbumAssetsV1:
+        throw new BadRequestException('Sync request type AlbumAssetsV1 is no longer supported');
+      case SyncRequestType.AlbumAssetsV2:
+        count = await this.syncAlbumAssets(stream, checkpointMap, nowId, userId, auth.session!.id);
+        break;
       case SyncRequestType.AlbumAssetExifsV1:
-        // These complex backfill types are simplified in Workers
-        // The basic sync for these entity types through their parent types is sufficient
+        count = await this.syncAlbumAssetExifs(stream, checkpointMap, nowId, userId, auth.session!.id);
         break;
     }
 
@@ -660,41 +730,84 @@ export class SyncService {
     tableName: string,
     entityType: SyncEntityType,
     checkpointMap: CheckpointMap,
+    nowId: string,
     options: {
       ownerFilter?: string;
       ownerColumn?: string;
+      filterQuery?: (query: any) => any;
       mapRow: (row: any) => any;
     },
   ): Promise<number> {
     const checkpoint = checkpointMap[entityType];
     const ownerColumn = options.ownerColumn || 'ownerId';
 
-    let query = this.db
-      .selectFrom(tableName as any)
-      .selectAll()
-      .orderBy('updateId', 'asc');
+    return this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom(tableName as any)
+          .selectAll()
+          .where('updateId' as any, '<', nowId)
+          .orderBy('updateId', 'asc');
 
-    if (checkpoint) {
-      query = query.where('updateId' as any, '>', checkpoint.updateId);
+        if (checkpoint) {
+          query = query.where('updateId' as any, '>', checkpoint.updateId);
+        }
+        if (afterId) {
+          query = query.where('updateId' as any, '>', afterId);
+        }
+        if (options.ownerFilter) {
+          query = query.where(ownerColumn as any, '=', options.ownerFilter);
+        }
+        if (options.filterQuery) {
+          query = options.filterQuery(query);
+        }
+
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => stream.write(serialize({
+        type: entityType,
+        ids: [row.updateId],
+        data: options.mapRow(row),
+      })),
+    );
+  }
+
+  private wasAlbumRelationSynced(
+    eb: any,
+    relationUpdateId: string,
+    albumCreateId: string,
+    upsertCheckpoint: SyncAck | undefined,
+    backfillCheckpoint: SyncAck | undefined,
+  ) {
+    if (!upsertCheckpoint) {
+      return eb.val(false);
     }
 
-    if (options.ownerFilter) {
-      query = query.where(ownerColumn as any, '=', options.ownerFilter);
+    const relationId = eb.ref(relationUpdateId);
+    const createId = eb.ref(albumCreateId);
+    const normalSync = eb.and([
+      eb(relationId, '<=', upsertCheckpoint.updateId),
+      eb(createId, '<=', relationId),
+    ]);
+    if (!backfillCheckpoint) {
+      return normalSync;
     }
 
-    const rows = await query.limit(1000).execute();
+    const currentBackfill = backfillCheckpoint.extraId === COMPLETE_ID
+      ? eb.val(true)
+      : backfillCheckpoint.extraId
+        ? eb(relationId, '<=', backfillCheckpoint.extraId)
+        : eb.val(false);
+    const backfillSync = eb.and([
+      eb(createId, '>', relationId),
+      eb.or([
+        eb(createId, '<', backfillCheckpoint.updateId),
+        eb.and([eb(createId, '=', backfillCheckpoint.updateId), currentBackfill]),
+      ]),
+    ]);
 
-    if (rows.length > 0) {
-      console.log(`[sync] syncSimpleUpsert(${tableName}, ${entityType}): checkpoint=${checkpoint?.updateId ?? 'none'}, found ${rows.length} rows`);
-    }
-
-    for (const row of rows) {
-      const data = options.mapRow(row);
-      const updateId = (row as any).updateId;
-      await stream.write(serialize({ type: entityType, ids: [updateId], data }));
-    }
-
-    return rows.length;
+    return eb.or([normalSync, backfillSync]);
   }
 
   /**
@@ -706,120 +819,298 @@ export class SyncService {
     auditTable: string,
     entityType: SyncEntityType,
     checkpointMap: CheckpointMap,
+    nowId: string,
     options: {
       ownerFilter?: string;
       ownerColumn?: string;
+      filterQuery?: (query: any) => any;
       mapRow: (row: any) => any;
     },
   ): Promise<number> {
     const checkpoint = checkpointMap[entityType];
 
-    let query = this.db
-      .selectFrom(auditTable as any)
-      .selectAll()
-      .orderBy('id', 'asc');
+    return this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom(auditTable as any)
+          .selectAll()
+          .where('id' as any, '<', nowId)
+          .orderBy('id', 'asc');
 
-    if (checkpoint) {
-      query = query.where('id' as any, '>', checkpoint.updateId);
-    }
+        if (checkpoint) {
+          query = query.where('id' as any, '>', checkpoint.updateId);
+        }
+        if (afterId) {
+          query = query.where('id' as any, '>', afterId);
+        }
+        if (options.ownerFilter && options.ownerColumn) {
+          query = query.where(options.ownerColumn as any, '=', options.ownerFilter);
+        }
+        if (options.filterQuery) {
+          query = options.filterQuery(query);
+        }
 
-    if (options.ownerFilter && options.ownerColumn) {
-      query = query.where(options.ownerColumn as any, '=', options.ownerFilter);
-    }
-
-    const rows = await query.limit(1000).execute();
-
-    if (rows.length > 0) {
-      console.log(`[sync] syncAuditDeletes(${auditTable}, ${entityType}): checkpoint=${checkpoint?.updateId ?? 'none'}, found ${rows.length} deletes`);
-    }
-
-    for (const row of rows) {
-      const data = options.mapRow(row);
-      await stream.write(serialize({ type: entityType, ids: [(row as any).id], data }));
-    }
-
-    return rows.length;
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.id,
+      async (row) => stream.write(serialize({
+        type: entityType,
+        ids: [row.id],
+        data: options.mapRow(row),
+      })),
+    );
   }
 
   private async syncExifUpserts(
     stream: SyncWriter,
     entityType: SyncEntityType,
     checkpointMap: CheckpointMap,
+    nowId: string,
     userId: string,
+    includeLocked: boolean,
   ): Promise<number> {
     const checkpoint = checkpointMap[entityType];
+    const syncId = sql<string>`max(asset_exif.updateId, asset.updateId)`;
 
-    let query = this.db
-      .selectFrom('asset_exif')
-      .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
-      .selectAll('asset_exif')
-      .where('asset.ownerId', '=', userId)
-      .orderBy('asset_exif.updateId', 'asc');
-
-    if (checkpoint) {
-      query = query.where('asset_exif.updateId', '>', checkpoint.updateId);
-    }
-
-    const rows = await query.limit(1000).execute();
-
-    if (rows.length > 0) {
-      console.log(`[sync] syncExifUpserts(${entityType}): checkpoint=${checkpoint?.updateId ?? 'none'}, found ${rows.length} rows`);
-    }
-
-    for (const row of rows) {
-      const { updateId, assetId, ...data } = row as any;
-      await stream.write(serialize({
+    return this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('asset_exif')
+          .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
+          .selectAll('asset_exif')
+          .select(syncId.as('syncId'))
+          .where('asset.ownerId', '=', userId)
+          .$if(!includeLocked, (qb) => qb.where('asset.visibility', '!=', 'locked'))
+          .where(syncId, '<', nowId)
+          .orderBy(syncId, 'asc');
+        if (checkpoint) query = query.where(syncId, '>', checkpoint.updateId);
+        if (afterId) query = query.where(syncId, '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.syncId,
+      async (row) => stream.write(serialize({
         type: entityType,
-        ids: [updateId],
-        data: { assetId, ...data },
-      }));
-    }
+        ids: [row.syncId],
+        data: mapSyncAssetExifV1(row),
+      })),
+    );
+  }
 
-    return rows.length;
+  private async syncStackUpserts(
+    stream: SyncWriter,
+    checkpointMap: CheckpointMap,
+    nowId: string,
+    userId: string,
+    includeLocked: boolean,
+  ): Promise<number> {
+    const entityType = SyncEntityType.StackV1;
+    const checkpoint = checkpointMap[entityType];
+    const syncId = sql<string>`max(stack.updateId, asset.updateId)`;
+
+    return this.streamPages(
+      async (afterId) => {
+        let query = this.db.selectFrom('stack')
+          .innerJoin('asset', 'asset.id', 'stack.primaryAssetId')
+          .selectAll('stack')
+          .select(syncId.as('syncId'))
+          .where('stack.ownerId', '=', userId)
+          .$if(!includeLocked, (qb) => qb.where('asset.visibility', '!=', 'locked'))
+          .where(syncId, '<', nowId)
+          .orderBy(syncId, 'asc');
+        if (checkpoint) query = query.where(syncId, '>', checkpoint.updateId);
+        if (afterId) query = query.where(syncId, '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.syncId,
+      async (row) => stream.write(serialize({
+        type: entityType,
+        ids: [row.syncId],
+        data: this.mapStack(row),
+      })),
+    );
+  }
+
+  private async syncPartnerAssets(
+    stream: SyncWriter,
+    checkpointMap: CheckpointMap,
+    nowId: string,
+    userId: string,
+    sessionId: string,
+  ): Promise<number> {
+    const deleteType = SyncEntityType.PartnerAssetDeleteV1;
+    let count = await this.syncAuditDeletes(stream, 'asset_audit', deleteType, checkpointMap, nowId, {
+      filterQuery: (query) => query.where('ownerId', 'in',
+        this.db.selectFrom('partner').select('sharedById').where('sharedWithId', '=', userId),
+      ).where((eb: any) => eb.or([
+        ...(checkpointMap[SyncEntityType.PartnerAssetV2] ? [eb('reason', '=', 'lock')] : []),
+        eb.and([
+          eb('reason', '!=', 'lock'),
+          eb.or([eb('visibility', '!=', 'locked'), eb('visibility', 'is', null)]),
+        ]),
+      ])),
+      mapRow: (row: any) => ({ assetId: row.assetId }),
+    });
+    const upsertType = SyncEntityType.PartnerAssetV2;
+    const backfillType = SyncEntityType.PartnerAssetBackfillV2;
+    const relations = await this.getPartnerBackfillRelations(userId, nowId, checkpointMap[backfillType]);
+    count += await this.syncEntityBackfills({
+      stream, checkpointMap, backfillType, upsertType, sessionId, relations,
+      fetchPage: async (partnerId, cursor, endId) => {
+        let query = this.db.selectFrom('asset').selectAll()
+          .where('ownerId', '=', partnerId)
+          .where('visibility', '!=', 'locked')
+          .where('updateId', '<', nowId)
+          .where('updateId', '<=', endId)
+          .orderBy('updateId', 'asc');
+        if (cursor) query = query.where('updateId', '>', cursor);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      mapRow: (row) => this.mapSharedAsset(row, userId),
+    });
+    const checkpoint = checkpointMap[upsertType];
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db.selectFrom('asset').selectAll()
+          .where('ownerId', 'in', this.db.selectFrom('partner').select('sharedById').where('sharedWithId', '=', userId))
+          .where('visibility', '!=', 'locked')
+          .where('updateId', '<', nowId)
+          .orderBy('updateId', 'asc');
+        if (checkpoint) query = query.where('updateId', '>', checkpoint.updateId);
+        if (afterId) query = query.where('updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => stream.write(serialize({ type: upsertType, ids: [row.updateId], data: this.mapSharedAsset(row, userId) })),
+    );
+    return count;
+  }
+
+  private async syncPartnerAssetExifs(
+    stream: SyncWriter,
+    checkpointMap: CheckpointMap,
+    nowId: string,
+    userId: string,
+    sessionId: string,
+  ): Promise<number> {
+    const upsertType = SyncEntityType.PartnerAssetExifV1;
+    const backfillType = SyncEntityType.PartnerAssetExifBackfillV1;
+    const relations = await this.getPartnerBackfillRelations(userId, nowId, checkpointMap[backfillType]);
+    let count = await this.syncEntityBackfills({
+      stream, checkpointMap, backfillType, upsertType, sessionId, relations,
+      fetchPage: async (partnerId, cursor, endId) => {
+        let query = this.db.selectFrom('asset_exif').innerJoin('asset', 'asset.id', 'asset_exif.assetId')
+          .selectAll('asset_exif')
+          .where('asset.ownerId', '=', partnerId)
+          .where('asset.visibility', '!=', 'locked')
+          .where('asset_exif.updateId', '<', nowId)
+          .where('asset_exif.updateId', '<=', endId)
+          .orderBy('asset_exif.updateId', 'asc');
+        if (cursor) query = query.where('asset_exif.updateId', '>', cursor);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      mapRow: (row) => mapSyncAssetExifV1(row),
+    });
+    const checkpoint = checkpointMap[upsertType];
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db.selectFrom('asset_exif').innerJoin('asset', 'asset.id', 'asset_exif.assetId')
+          .selectAll('asset_exif')
+          .where('asset.ownerId', 'in', this.db.selectFrom('partner').select('sharedById').where('sharedWithId', '=', userId))
+          .where('asset.visibility', '!=', 'locked')
+          .where('asset_exif.updateId', '<', nowId)
+          .orderBy('asset_exif.updateId', 'asc');
+        if (checkpoint) query = query.where('asset_exif.updateId', '>', checkpoint.updateId);
+        if (afterId) query = query.where('asset_exif.updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => stream.write(serialize({ type: upsertType, ids: [row.updateId], data: mapSyncAssetExifV1(row) })),
+    );
+    return count;
+  }
+
+  private async syncPartnerStacks(
+    stream: SyncWriter,
+    checkpointMap: CheckpointMap,
+    nowId: string,
+    userId: string,
+    sessionId: string,
+  ): Promise<number> {
+    const deleteType = SyncEntityType.PartnerStackDeleteV1;
+    let count = await this.syncAuditDeletes(stream, 'stack_audit', deleteType, checkpointMap, nowId, {
+      filterQuery: (query) => query.where('userId', 'in',
+        this.db.selectFrom('partner').select('sharedById').where('sharedWithId', '=', userId),
+      ),
+      mapRow: (row: any) => ({ stackId: row.stackId }),
+    });
+    const upsertType = SyncEntityType.PartnerStackV1;
+    const backfillType = SyncEntityType.PartnerStackBackfillV1;
+    const relations = await this.getPartnerBackfillRelations(userId, nowId, checkpointMap[backfillType]);
+    count += await this.syncEntityBackfills({
+      stream, checkpointMap, backfillType, upsertType, sessionId, relations,
+      fetchPage: async (partnerId, cursor, endId) => {
+        let query = this.db.selectFrom('stack').innerJoin('asset', 'asset.id', 'stack.primaryAssetId')
+          .selectAll('stack')
+          .where('stack.ownerId', '=', partnerId)
+          .where('asset.visibility', '!=', 'locked')
+          .where('stack.updateId', '<', nowId)
+          .where('stack.updateId', '<=', endId)
+          .orderBy('stack.updateId', 'asc');
+        if (cursor) query = query.where('stack.updateId', '>', cursor);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      mapRow: (row) => this.mapStack(row),
+    });
+    const checkpoint = checkpointMap[upsertType];
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db.selectFrom('stack').innerJoin('asset', 'asset.id', 'stack.primaryAssetId')
+          .selectAll('stack')
+          .where('stack.ownerId', 'in', this.db.selectFrom('partner').select('sharedById').where('sharedWithId', '=', userId))
+          .where('asset.visibility', '!=', 'locked')
+          .where('stack.updateId', '<', nowId)
+          .orderBy('stack.updateId', 'asc');
+        if (checkpoint) query = query.where('stack.updateId', '>', checkpoint.updateId);
+        if (afterId) query = query.where('stack.updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => stream.write(serialize({ type: upsertType, ids: [row.updateId], data: this.mapStack(row) })),
+    );
+    return count;
   }
 
   private async syncAlbumUpserts(
     stream: SyncWriter,
+    entityType: SyncEntityType.AlbumV1 | SyncEntityType.AlbumV2,
     checkpointMap: CheckpointMap,
+    nowId: string,
     userId: string,
   ): Promise<number> {
-    const entityType = SyncEntityType.AlbumV1;
     const checkpoint = checkpointMap[entityType];
 
-    // Get albums owned by user or shared with user
-    let query = this.db
-      .selectFrom('album')
-      .selectAll()
-      .where((eb) =>
-        eb.or([
-          eb('album.ownerId', '=', userId),
-          eb.exists(
-            eb.selectFrom('album_user')
-              .select('album_user.albumId')
-              .whereRef('album_user.albumId', '=', 'album.id')
-              .where('album_user.userId', '=', userId),
-          ),
-        ]),
-      )
-      .orderBy('album.updateId', 'asc');
-
-    if (checkpoint) {
-      query = query.where('album.updateId', '>', checkpoint.updateId);
-    }
-
-    const rows = await query.limit(1000).execute();
-
-    if (rows.length > 0) {
-      console.log(`[sync] syncAlbumUpserts: checkpoint=${checkpoint?.updateId ?? 'none'}, found ${rows.length} albums`);
-    }
-
-    for (const row of rows) {
-      await stream.write(serialize({
-        type: entityType,
-        ids: [(row as any).updateId],
-        data: {
+    return this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('album')
+          .innerJoin('album_user as current_user', (join) =>
+            join.onRef('current_user.albumId', '=', 'album.id').on('current_user.userId', '=', userId),
+          )
+          .innerJoin('album_user as owner', (join) =>
+            join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', AlbumUserRole.Owner),
+          )
+          .selectAll('album')
+          .select('owner.userId as ownerId')
+          .where('album.updateId', '<', nowId)
+          .orderBy('album.updateId', 'asc');
+        if (checkpoint) query = query.where('album.updateId', '>', checkpoint.updateId);
+        if (afterId) query = query.where('album.updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => {
+        const data = {
           id: row.id,
-          ownerId: row.ownerId,
           name: row.albumName,
           description: row.description ?? '',
           createdAt: row.createdAt,
@@ -827,231 +1118,558 @@ export class SyncService {
           thumbnailAssetId: row.albumThumbnailAssetId,
           isActivityEnabled: Boolean(row.isActivityEnabled),
           order: row.order,
-        },
-      }));
-    }
-
-    return rows.length;
+        };
+        await stream.write(serialize({
+          type: entityType,
+          ids: [row.updateId],
+          data: entityType === SyncEntityType.AlbumV1 ? { ...data, ownerId: row.ownerId } : data,
+        } as any));
+      },
+    );
   }
 
-  private async syncAlbumUserUpserts(
+  private async syncAlbumAssets(
     stream: SyncWriter,
     checkpointMap: CheckpointMap,
+    nowId: string,
     userId: string,
+    sessionId: string,
+  ): Promise<number> {
+    const createType = SyncEntityType.AlbumAssetCreateV2;
+    const updateType = SyncEntityType.AlbumAssetUpdateV2;
+    const backfillType = SyncEntityType.AlbumAssetBackfillV2;
+    const createCheckpoint = checkpointMap[createType];
+    const relations = await this.getAlbumBackfillRelations(userId, nowId, checkpointMap[backfillType]);
+    let count = await this.syncEntityBackfills({
+      stream,
+      checkpointMap,
+      backfillType,
+      upsertType: createType,
+      sessionId,
+      relations,
+      fetchPage: async (albumId, cursor, endId) => {
+        let query = this.db.selectFrom('album_asset').innerJoin('asset', 'asset.id', 'album_asset.assetId')
+          .selectAll('asset')
+          .select('album_asset.updateId as updateId')
+          .where('album_asset.albumId', '=', albumId)
+          .where('asset.visibility', '!=', 'locked')
+          .where('album_asset.updateId', '<', nowId)
+          .where('album_asset.updateId', '<=', endId)
+          .orderBy('album_asset.updateId', 'asc');
+        if (cursor) query = query.where('album_asset.updateId', '>', cursor);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      mapRow: (row) => this.mapSharedAsset(row, userId),
+    });
+
+    if (createCheckpoint) {
+      const updateCheckpoint = checkpointMap[updateType];
+      count += await this.streamPages(
+        async (afterId) => {
+          let query = this.db.selectFrom('asset')
+            .innerJoin('album_asset', 'album_asset.assetId', 'asset.id')
+            .innerJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
+            .selectAll('asset')
+            .where('album_user.userId', '=', userId)
+            .where('album_asset.updateId', '<=', createCheckpoint.updateId)
+            .where('asset.visibility', '!=', 'locked')
+            .where('asset.updateId', '<', nowId)
+            .orderBy('asset.updateId', 'asc');
+          if (updateCheckpoint) query = query.where('asset.updateId', '>', updateCheckpoint.updateId);
+          if (afterId) query = query.where('asset.updateId', '>', afterId);
+          return query.limit(PAGE_SIZE).execute();
+        },
+        (row) => row.updateId,
+        async (row) => stream.write(serialize({
+          type: updateType,
+          ids: [row.updateId],
+          data: this.mapSharedAsset(row, userId),
+        })),
+      );
+    }
+
+    let sentUpdateCheckpoint = false;
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db.selectFrom('album_asset').innerJoin('asset', 'asset.id', 'album_asset.assetId')
+          .innerJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
+          .selectAll('asset')
+          .select('album_asset.updateId as updateId')
+          .where('album_user.userId', '=', userId)
+          .where('asset.visibility', '!=', 'locked')
+          .where('album_asset.updateId', '<', nowId)
+          .orderBy('album_asset.updateId', 'asc');
+        if (createCheckpoint) query = query.where('album_asset.updateId', '>', createCheckpoint.updateId);
+        if (afterId) query = query.where('album_asset.updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => {
+        if (!sentUpdateCheckpoint) {
+          await stream.write(serialize({ type: SyncEntityType.SyncAckV1, ackType: updateType, ids: [nowId], data: {} }));
+          sentUpdateCheckpoint = true;
+        }
+        await stream.write(serialize({ type: createType, ids: [row.updateId], data: this.mapSharedAsset(row, userId) }));
+      },
+    );
+    return count;
+  }
+
+  private async syncAlbumAssetExifs(
+    stream: SyncWriter,
+    checkpointMap: CheckpointMap,
+    nowId: string,
+    userId: string,
+    sessionId: string,
+  ): Promise<number> {
+    const createType = SyncEntityType.AlbumAssetExifCreateV1;
+    const updateType = SyncEntityType.AlbumAssetExifUpdateV1;
+    const backfillType = SyncEntityType.AlbumAssetExifBackfillV1;
+    const createCheckpoint = checkpointMap[createType];
+    const relations = await this.getAlbumBackfillRelations(userId, nowId, checkpointMap[backfillType]);
+    let count = await this.syncEntityBackfills({
+      stream,
+      checkpointMap,
+      backfillType,
+      upsertType: createType,
+      sessionId,
+      relations,
+      fetchPage: async (albumId, cursor, endId) => {
+        let query = this.db.selectFrom('album_asset')
+          .innerJoin('asset', 'asset.id', 'album_asset.assetId')
+          .innerJoin('asset_exif', 'asset_exif.assetId', 'album_asset.assetId')
+          .selectAll('asset_exif')
+          .select('album_asset.updateId as updateId')
+          .where('album_asset.albumId', '=', albumId)
+          .where('asset.visibility', '!=', 'locked')
+          .where('album_asset.updateId', '<', nowId)
+          .where('album_asset.updateId', '<=', endId)
+          .orderBy('album_asset.updateId', 'asc');
+        if (cursor) query = query.where('album_asset.updateId', '>', cursor);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      mapRow: (row) => mapSyncAssetExifV1(row),
+    });
+
+    if (createCheckpoint) {
+      const updateCheckpoint = checkpointMap[updateType];
+      count += await this.streamPages(
+        async (afterId) => {
+          let query = this.db.selectFrom('asset_exif')
+            .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
+            .innerJoin('album_asset', 'album_asset.assetId', 'asset_exif.assetId')
+            .innerJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
+            .selectAll('asset_exif')
+            .where('album_user.userId', '=', userId)
+            .where('album_asset.updateId', '<=', createCheckpoint.updateId)
+            .where('asset.visibility', '!=', 'locked')
+            .where('asset_exif.updateId', '<', nowId)
+            .orderBy('asset_exif.updateId', 'asc');
+          if (updateCheckpoint) query = query.where('asset_exif.updateId', '>', updateCheckpoint.updateId);
+          if (afterId) query = query.where('asset_exif.updateId', '>', afterId);
+          return query.limit(PAGE_SIZE).execute();
+        },
+        (row) => row.updateId,
+        async (row) => stream.write(serialize({
+          type: updateType,
+          ids: [row.updateId],
+          data: mapSyncAssetExifV1(row),
+        })),
+      );
+    }
+
+    let sentUpdateCheckpoint = false;
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db.selectFrom('album_asset')
+          .innerJoin('asset', 'asset.id', 'album_asset.assetId')
+          .innerJoin('asset_exif', 'asset_exif.assetId', 'album_asset.assetId')
+          .innerJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
+          .selectAll('asset_exif')
+          .select('album_asset.updateId as updateId')
+          .where('album_user.userId', '=', userId)
+          .where('asset.visibility', '!=', 'locked')
+          .where('album_asset.updateId', '<', nowId)
+          .orderBy('album_asset.updateId', 'asc');
+        if (createCheckpoint) query = query.where('album_asset.updateId', '>', createCheckpoint.updateId);
+        if (afterId) query = query.where('album_asset.updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => {
+        if (!sentUpdateCheckpoint) {
+          await stream.write(serialize({ type: SyncEntityType.SyncAckV1, ackType: updateType, ids: [nowId], data: {} }));
+          sentUpdateCheckpoint = true;
+        }
+        await stream.write(serialize({ type: createType, ids: [row.updateId], data: mapSyncAssetExifV1(row) }));
+      },
+    );
+    return count;
+  }
+
+  private async syncAlbumUsers(
+    stream: SyncWriter,
+    checkpointMap: CheckpointMap,
+    nowId: string,
+    userId: string,
+    sessionId: string,
   ): Promise<number> {
     const entityType = SyncEntityType.AlbumUserV1;
     const checkpoint = checkpointMap[entityType];
-
-    let query = this.db
+    const backfillType = SyncEntityType.AlbumUserBackfillV1;
+    const backfillCheckpoint = checkpointMap[backfillType];
+    const albums = await this.db
       .selectFrom('album_user')
-      .innerJoin('album', 'album.id', 'album_user.albumId')
-      .selectAll('album_user')
-      .where((eb) =>
-        eb.or([
-          eb('album.ownerId', '=', userId),
-          eb('album_user.userId', '=', userId),
-        ]),
-      )
-      .orderBy('album_user.updateId', 'asc');
+      .select(['albumId', 'createId'])
+      .where('userId', '=', userId)
+      .where('createId', '<', nowId)
+      .$if(!!backfillCheckpoint, (query) => query.where('createId', '>=', backfillCheckpoint!.updateId))
+      .orderBy('createId', 'asc')
+      .execute();
+    let count = 0;
 
     if (checkpoint) {
-      query = query.where('album_user.updateId', '>', checkpoint.updateId);
+      for (const album of albums) {
+        if (isEntityBackfillComplete(album.createId, backfillCheckpoint)) continue;
+        const startId = getBackfillStartId(album.createId, backfillCheckpoint);
+        count += await this.streamPages(
+          async (afterId) => {
+            let query = this.db.selectFrom('album_user').selectAll()
+              .where('albumId', '=', album.albumId)
+              .where('updateId', '<', nowId)
+              .where('updateId', '<=', checkpoint.updateId)
+              .orderBy('updateId', 'asc');
+            if (startId) query = query.where('updateId', '>', startId);
+            if (afterId) query = query.where('updateId', '>', afterId);
+            return query.limit(PAGE_SIZE).execute();
+          },
+          (row) => row.updateId,
+          async (row) => stream.write(serialize({
+            type: backfillType,
+            ids: [album.createId, row.updateId],
+            data: { albumId: row.albumId, userId: row.userId, role: row.role as AlbumUserRole },
+          })),
+        );
+        await this.sendBackfillComplete(stream, backfillType, album.createId);
+      }
+    } else if (albums.length > 0) {
+      await this.setBackfillComplete(sessionId, backfillType, albums.at(-1)!.createId);
     }
 
-    const rows = await query.limit(1000).execute();
-
-    for (const row of rows) {
-      await stream.write(serialize({
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('album_user')
+          .selectAll('album_user')
+          .where('album_user.albumId', 'in',
+            this.db.selectFrom('album_user as current_user').select('current_user.albumId').where('current_user.userId', '=', userId),
+          )
+          .where('album_user.updateId', '<', nowId)
+          .orderBy('album_user.updateId', 'asc');
+        if (checkpoint) query = query.where('album_user.updateId', '>', checkpoint.updateId);
+        if (afterId) query = query.where('album_user.updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => stream.write(serialize({
         type: entityType,
-        ids: [(row as any).updateId],
-        data: {
-          albumId: row.albumId,
-          userId: row.userId,
-          role: row.role,
-        },
-      }));
-    }
+        ids: [row.updateId],
+        data: { albumId: row.albumId, userId: row.userId, role: row.role as AlbumUserRole },
+      })),
+    );
 
-    return rows.length;
+    return count;
   }
 
-  private async syncAlbumToAssetUpserts(
+  private async syncAlbumToAssets(
     stream: SyncWriter,
     checkpointMap: CheckpointMap,
+    nowId: string,
     userId: string,
+    sessionId: string,
+    includeLocked: boolean,
   ): Promise<number> {
     const entityType = SyncEntityType.AlbumToAssetV1;
     const checkpoint = checkpointMap[entityType];
-
-    let query = this.db
-      .selectFrom('album_asset')
-      .innerJoin('album', 'album.id', 'album_asset.albumId')
-      .selectAll('album_asset')
-      .where((eb) =>
-        eb.or([
-          eb('album.ownerId', '=', userId),
-          eb.exists(
-            eb.selectFrom('album_user')
-              .select('album_user.albumId')
-              .whereRef('album_user.albumId', '=', 'album.id')
-              .where('album_user.userId', '=', userId),
-          ),
-        ]),
-      )
-      .orderBy('album_asset.updateId', 'asc');
+    const backfillType = SyncEntityType.AlbumToAssetBackfillV1;
+    const backfillCheckpoint = checkpointMap[backfillType];
+    const albums = await this.db.selectFrom('album_user').select(['albumId', 'createId'])
+      .where('userId', '=', userId)
+      .where('createId', '<', nowId)
+      .$if(!!backfillCheckpoint, (query) => query.where('createId', '>=', backfillCheckpoint!.updateId))
+      .orderBy('createId', 'asc')
+      .execute();
+    let count = 0;
 
     if (checkpoint) {
-      query = query.where('album_asset.updateId', '>', checkpoint.updateId);
+      for (const album of albums) {
+        if (isEntityBackfillComplete(album.createId, backfillCheckpoint)) continue;
+        const startId = getBackfillStartId(album.createId, backfillCheckpoint);
+        count += await this.streamPages(
+          async (afterId) => {
+            let query = this.db.selectFrom('album_asset')
+              .innerJoin('asset', 'asset.id', 'album_asset.assetId')
+              .selectAll('album_asset')
+              .where('album_asset.albumId', '=', album.albumId)
+              .$if(!includeLocked, (qb) => qb.where('asset.visibility', '!=', 'locked'))
+              .where('album_asset.updateId', '<', nowId)
+              .where('album_asset.updateId', '<=', checkpoint.updateId)
+              .orderBy('album_asset.updateId', 'asc');
+            if (startId) query = query.where('album_asset.updateId', '>', startId);
+            if (afterId) query = query.where('album_asset.updateId', '>', afterId);
+            return query.limit(PAGE_SIZE).execute();
+          },
+          (row) => row.updateId,
+          async (row) => stream.write(serialize({
+            type: backfillType,
+            ids: [album.createId, row.updateId],
+            data: { albumId: row.albumId, assetId: row.assetId },
+          })),
+        );
+        await this.sendBackfillComplete(stream, backfillType, album.createId);
+      }
+    } else if (albums.length > 0) {
+      await this.setBackfillComplete(sessionId, backfillType, albums.at(-1)!.createId);
     }
 
-    const rows = await query.limit(1000).execute();
-
-    for (const row of rows) {
-      await stream.write(serialize({
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('album_asset')
+          .innerJoin('asset', 'asset.id', 'album_asset.assetId')
+          .selectAll('album_asset')
+          .where('album_asset.albumId', 'in',
+            this.db.selectFrom('album_user').select('albumId').where('userId', '=', userId),
+          )
+          .$if(!includeLocked, (qb) => qb.where('asset.visibility', '!=', 'locked'))
+          .where('album_asset.updateId', '<', nowId)
+          .orderBy('album_asset.updateId', 'asc');
+        if (checkpoint) query = query.where('album_asset.updateId', '>', checkpoint.updateId);
+        if (afterId) query = query.where('album_asset.updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => stream.write(serialize({
         type: entityType,
-        ids: [(row as any).updateId],
-        data: {
-          albumId: row.albumId,
-          assetId: row.assetId,
-        },
-      }));
-    }
+        ids: [row.updateId],
+        data: { albumId: row.albumId, assetId: row.assetId },
+      })),
+    );
 
-    return rows.length;
+    return count;
   }
 
   private async syncMemoryAssetUpserts(
     stream: SyncWriter,
     checkpointMap: CheckpointMap,
+    nowId: string,
     userId: string,
+    includeLocked: boolean,
   ): Promise<number> {
     const entityType = SyncEntityType.MemoryToAssetV1;
     const checkpoint = checkpointMap[entityType];
+    const syncId = sql<string>`max(memory_asset.updateId, asset.updateId)`;
 
-    let query = this.db
-      .selectFrom('memory_asset')
-      .innerJoin('memory', 'memory.id', 'memory_asset.memoriesId')
-      .selectAll('memory_asset')
-      .where('memory.ownerId', '=', userId)
-      .orderBy('memory_asset.updateId', 'asc');
-
-    if (checkpoint) {
-      query = query.where('memory_asset.updateId', '>', checkpoint.updateId);
-    }
-
-    const rows = await query.limit(1000).execute();
-
-    for (const row of rows) {
-      await stream.write(serialize({
+    return this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('memory_asset')
+          .innerJoin('memory', 'memory.id', 'memory_asset.memoriesId')
+          .innerJoin('asset', 'asset.id', 'memory_asset.assetId')
+          .selectAll('memory_asset')
+          .select(syncId.as('syncId'))
+          .where('memory.ownerId', '=', userId)
+          .$if(!includeLocked, (qb) => qb.where('asset.visibility', '!=', 'locked'))
+          .where(syncId, '<', nowId)
+          .orderBy(syncId, 'asc');
+        if (checkpoint) query = query.where(syncId, '>', checkpoint.updateId);
+        if (afterId) query = query.where(syncId, '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.syncId,
+      async (row) => stream.write(serialize({
         type: entityType,
-        ids: [(row as any).updateId],
-        data: {
-          memoryId: row.memoriesId,
-          assetId: row.assetId,
-        },
-      }));
-    }
-
-    return rows.length;
+        ids: [row.syncId],
+        data: { memoryId: row.memoriesId, assetId: row.assetId },
+      })),
+    );
   }
 
   private async syncUserMetadataUpserts(
     stream: SyncWriter,
     checkpointMap: CheckpointMap,
+    nowId: string,
     userId: string,
   ): Promise<number> {
     const entityType = SyncEntityType.UserMetadataV1;
     const checkpoint = checkpointMap[entityType];
 
-    let query = this.db
-      .selectFrom('user_metadata')
-      .selectAll()
-      .where('userId', '=', userId)
-      .orderBy('updateId', 'asc');
-
-    if (checkpoint) {
-      query = query.where('updateId', '>', checkpoint.updateId);
-    }
-
-    const rows = await query.limit(1000).execute();
-
-    for (const row of rows) {
-      await stream.write(serialize({
+    return this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('user_metadata')
+          .selectAll()
+          .where('userId', '=', userId)
+          .where('updateId', '<', nowId)
+          .orderBy('updateId', 'asc');
+        if (checkpoint) query = query.where('updateId', '>', checkpoint.updateId);
+        if (afterId) query = query.where('updateId', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.updateId,
+      async (row) => stream.write(serialize({
         type: entityType,
-        ids: [(row as any).updateId],
+        ids: [row.updateId],
         data: {
           userId: row.userId,
           key: row.key,
           value: typeof row.value === 'string' ? JSON.parse(row.value) : row.value,
         },
-      }));
-    }
-
-    return rows.length;
+      })),
+    );
   }
 
   private async syncAssetMetadata(
     stream: SyncWriter,
     checkpointMap: CheckpointMap,
+    nowId: string,
     auth: AuthDto,
   ): Promise<number> {
     const userId = auth.user.id;
+    const includeLocked = !!auth.session?.hasElevatedPermission;
     let count = 0;
 
     // Deletes
     const deleteType = SyncEntityType.AssetMetadataDeleteV1;
     const deleteCheckpoint = checkpointMap[deleteType];
 
-    let deleteQuery = this.db
-      .selectFrom('asset_metadata_audit')
-      .selectAll()
-      .where('asset_metadata_audit.assetId', 'in',
-        this.db.selectFrom('asset').select('asset.id').where('asset.ownerId', '=', userId),
-      )
-      .orderBy('id', 'asc');
-
-    if (deleteCheckpoint) {
-      deleteQuery = deleteQuery.where('id', '>', deleteCheckpoint.updateId);
-    }
-
-    const deleteRows = await deleteQuery.limit(1000).execute();
-    for (const row of deleteRows) {
-      await stream.write(serialize({
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('asset_metadata_audit')
+          .innerJoin('asset', 'asset.id', 'asset_metadata_audit.assetId')
+          .selectAll('asset_metadata_audit')
+          .where('asset.ownerId', '=', userId)
+          .$if(!includeLocked, (qb) => qb.where((eb) => eb.or([
+            eb('asset_metadata_audit.visibility', '!=', 'locked'),
+            eb('asset_metadata_audit.visibility', 'is', null),
+          ])))
+          .where('asset_metadata_audit.id', '<', nowId)
+          .orderBy('asset_metadata_audit.id', 'asc');
+        if (deleteCheckpoint) query = query.where('asset_metadata_audit.id', '>', deleteCheckpoint.updateId);
+        if (afterId) query = query.where('asset_metadata_audit.id', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.id,
+      async (row) => stream.write(serialize({
         type: deleteType,
-        ids: [(row as any).id],
-        data: { assetId: (row as any).assetId, key: (row as any).key },
-      }));
-    }
-    count += deleteRows.length;
+        ids: [row.id],
+        data: { assetId: row.assetId, key: row.key },
+      })),
+    );
 
     // Upserts
     const upsertType = SyncEntityType.AssetMetadataV1;
     const upsertCheckpoint = checkpointMap[upsertType];
+    const syncId = sql<string>`max(asset_metadata.updateId, asset.updateId)`;
 
-    let upsertQuery = this.db
-      .selectFrom('asset_metadata')
-      .innerJoin('asset', 'asset.id', 'asset_metadata.assetId')
-      .selectAll('asset_metadata')
-      .where('asset.ownerId', '=', userId)
-      .orderBy('asset_metadata.updateId', 'asc');
-
-    if (upsertCheckpoint) {
-      upsertQuery = upsertQuery.where('asset_metadata.updateId', '>', upsertCheckpoint.updateId);
-    }
-
-    const upsertRows = await upsertQuery.limit(1000).execute();
-    for (const row of upsertRows) {
-      await stream.write(serialize({
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('asset_metadata')
+          .innerJoin('asset', 'asset.id', 'asset_metadata.assetId')
+          .selectAll('asset_metadata')
+          .select(syncId.as('syncId'))
+          .where('asset.ownerId', '=', userId)
+          .$if(!includeLocked, (qb) => qb.where('asset.visibility', '!=', 'locked'))
+          .where(syncId, '<', nowId)
+          .orderBy(syncId, 'asc');
+        if (upsertCheckpoint) query = query.where(syncId, '>', upsertCheckpoint.updateId);
+        if (afterId) query = query.where(syncId, '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.syncId,
+      async (row) => stream.write(serialize({
         type: upsertType,
-        ids: [(row as any).updateId],
+        ids: [row.syncId],
         data: {
           assetId: row.assetId,
           key: row.key,
           value: typeof row.value === 'string' ? JSON.parse(row.value) : row.value,
         },
-      }));
-    }
-    count += upsertRows.length;
+      })),
+    );
+
+    return count;
+  }
+
+  private async syncAssetEdits(
+    stream: SyncWriter,
+    checkpointMap: CheckpointMap,
+    nowId: string,
+    userId: string,
+    includeLocked: boolean,
+  ): Promise<number> {
+    let count = 0;
+    const deleteType = SyncEntityType.AssetEditDeleteV1;
+    const deleteCheckpoint = checkpointMap[deleteType];
+
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('asset_edit_audit')
+          .innerJoin('asset', 'asset.id', 'asset_edit_audit.assetId')
+          .selectAll('asset_edit_audit')
+          .where('asset.ownerId', '=', userId)
+          .$if(!includeLocked, (qb) => qb.where((eb) => eb.or([
+            eb('asset_edit_audit.visibility', '!=', 'locked'),
+            eb('asset_edit_audit.visibility', 'is', null),
+          ])))
+          .where('asset_edit_audit.id', '<', nowId)
+          .orderBy('asset_edit_audit.id', 'asc');
+        if (deleteCheckpoint) query = query.where('asset_edit_audit.id', '>', deleteCheckpoint.updateId);
+        if (afterId) query = query.where('asset_edit_audit.id', '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.id,
+      async (row) => stream.write(serialize({
+        type: deleteType,
+        ids: [row.id],
+        data: { editId: row.editId },
+      })),
+    );
+
+    const upsertType = SyncEntityType.AssetEditV1;
+    const upsertCheckpoint = checkpointMap[upsertType];
+    const syncId = sql<string>`max(asset_edit.updateId, asset.updateId)`;
+    count += await this.streamPages(
+      async (afterId) => {
+        let query = this.db
+          .selectFrom('asset_edit')
+          .innerJoin('asset', 'asset.id', 'asset_edit.assetId')
+          .selectAll('asset_edit')
+          .select(syncId.as('syncId'))
+          .where('asset.ownerId', '=', userId)
+          .$if(!includeLocked, (qb) => qb.where('asset.visibility', '!=', 'locked'))
+          .where(syncId, '<', nowId)
+          .orderBy(syncId, 'asc');
+        if (upsertCheckpoint) query = query.where(syncId, '>', upsertCheckpoint.updateId);
+        if (afterId) query = query.where(syncId, '>', afterId);
+        return query.limit(PAGE_SIZE).execute();
+      },
+      (row) => row.syncId,
+      async (row) => stream.write(serialize({
+        type: upsertType,
+        ids: [row.syncId],
+        data: {
+          id: row.id,
+          assetId: row.assetId,
+          action: row.action,
+          parameters: typeof row.parameters === 'string' ? JSON.parse(row.parameters) : row.parameters,
+          sequence: row.sequence,
+        },
+      })),
+    );
 
     return count;
   }

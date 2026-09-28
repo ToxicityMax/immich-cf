@@ -5,15 +5,18 @@
  */
 
 import { Hono } from 'hono';
+import { BulkIdsSchema } from '../dtos/asset-ids.response.dto';
+import { Permission } from '../enum';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
+import { validate } from '../middleware/validate';
 
 const app = new Hono<AppEnv>();
 
 // POST /api/trash/empty -- Empty trash (hard delete assets + R2 objects)
 app.post(
   '/empty',
-  authMiddleware(),
+  authMiddleware({ permission: Permission.AssetDelete }),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -25,7 +28,7 @@ app.post(
 // POST /api/trash/restore -- Restore all trashed assets
 app.post(
   '/restore',
-  authMiddleware(),
+  authMiddleware({ permission: Permission.AssetDelete }),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
@@ -37,11 +40,12 @@ app.post(
 // POST /api/trash/restore/assets -- Restore specific assets
 app.post(
   '/restore/assets',
-  authMiddleware(),
+  authMiddleware({ permission: Permission.AssetDelete }),
+  validate('json', BulkIdsSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.trash.restore(auth, body);
     return c.json(result);
   },

@@ -13,7 +13,7 @@
 
 import type { Insertable, Kysely, Updateable } from 'kysely';
 import type { DB, SharedLinkTable } from 'src/schema';
-import { SharedLinkType } from 'src/enum';
+import { AlbumUserRole, SharedLinkType } from 'src/enum';
 
 export type SharedLinkSearchOptions = {
   userId: string;
@@ -21,8 +21,13 @@ export type SharedLinkSearchOptions = {
   albumId?: string;
 };
 
+const ASSET_INSERT_CHUNK_SIZE = 49;
+
 export class SharedLinkRepository {
-  constructor(private db: Kysely<DB>) {}
+  constructor(
+    private db: Kysely<DB>,
+    private d1: D1Database,
+  ) {}
 
   async get(userId: string, id: string) {
     const link = await this.db
@@ -56,14 +61,6 @@ export class SharedLinkRepository {
         .executeTakeFirst();
 
       if (album) {
-        // Get album owner
-        const owner = await this.db
-          .selectFrom('user')
-          .selectAll()
-          .where('user.id', '=', album.ownerId)
-          .where('user.deletedAt', 'is', null)
-          .executeTakeFirst();
-
         // Get album assets
         const albumAssets = await this.db
           .selectFrom('asset')
@@ -75,7 +72,7 @@ export class SharedLinkRepository {
           .orderBy('asset.fileCreatedAt', 'asc')
           .execute();
 
-        album = { ...album, owner, assets: albumAssets };
+        album = await this.enrichAlbum(album, albumAssets);
       }
     }
 
@@ -128,13 +125,7 @@ export class SharedLinkRepository {
             .executeTakeFirst();
 
           if (album) {
-            const owner = await this.db
-              .selectFrom('user')
-              .selectAll()
-              .where('user.id', '=', album.ownerId)
-              .where('user.deletedAt', 'is', null)
-              .executeTakeFirst();
-            album = { ...album, owner };
+            album = await this.enrichAlbum(album);
           }
         }
 
@@ -161,24 +152,43 @@ export class SharedLinkRepository {
   async create(entity: Insertable<SharedLinkTable> & { assetIds?: string[] }) {
     const { assetIds, ...linkData } = entity as any;
 
-    await this.db.insertInto('shared_link').values(linkData).execute();
+    const statements = [
+      this.d1.prepare(
+        `INSERT INTO "shared_link"
+          ("id", "description", "userId", "key", "type", "createdAt", "expiresAt", "allowUpload", "albumId", "allowDownload", "showExif", "password", "slug")
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        linkData.id,
+        linkData.description ?? null,
+        linkData.userId,
+        linkData.key,
+        linkData.type,
+        linkData.createdAt,
+        linkData.expiresAt ?? null,
+        Number(linkData.allowUpload),
+        linkData.albumId ?? null,
+        Number(linkData.allowDownload),
+        Number(linkData.showExif),
+        linkData.password ?? null,
+        linkData.slug ?? null,
+      ),
+    ];
 
-    // Get the created link (order by createdAt desc to get the latest)
-    const created = await this.db
-      .selectFrom('shared_link')
-      .selectAll()
-      .where('shared_link.userId', '=', linkData.userId)
-      .where('shared_link.key', '=', linkData.key)
-      .executeTakeFirstOrThrow();
-
-    if (assetIds && assetIds.length > 0) {
-      await this.db
-        .insertInto('shared_link_asset')
-        .values(assetIds.map((assetId: string) => ({ assetId, sharedLinkId: created.id })))
-        .execute();
+    for (let i = 0; i < (assetIds?.length || 0); i += ASSET_INSERT_CHUNK_SIZE) {
+      const chunk = assetIds!.slice(i, i + ASSET_INSERT_CHUNK_SIZE);
+      statements.push(
+        this.d1
+          .prepare(
+            `INSERT INTO "shared_link_asset" ("assetId", "sharedLinkId") VALUES ${chunk
+              .map(() => '(?, ?)')
+              .join(', ')}`,
+          )
+          .bind(...chunk.flatMap((assetId: string) => [assetId, linkData.id])),
+      );
     }
 
-    return this.getSharedLinkById(created.id);
+    await this.d1.batch(statements);
+    return this.getSharedLinkById(linkData.id);
   }
 
   async update(entity: Updateable<SharedLinkTable> & { id: string; assetIds?: string[] }) {
@@ -191,10 +201,7 @@ export class SharedLinkRepository {
       .execute();
 
     if (assetIds && assetIds.length > 0) {
-      await this.db
-        .insertInto('shared_link_asset')
-        .values(assetIds.map((assetId: string) => ({ assetId, sharedLinkId: entity.id })))
-        .execute();
+      await this.addAssets(entity.id, assetIds);
     }
 
     return this.getSharedLinkById(entity.id!);
@@ -202,6 +209,27 @@ export class SharedLinkRepository {
 
   async remove(id: string): Promise<void> {
     await this.db.deleteFrom('shared_link').where('shared_link.id', '=', id).execute();
+  }
+
+  async addAssets(id: string, assetIds: string[]): Promise<void> {
+    if (assetIds.length === 0) {
+      return;
+    }
+
+    const statements: D1PreparedStatement[] = [];
+    for (let i = 0; i < assetIds.length; i += ASSET_INSERT_CHUNK_SIZE) {
+      const chunk = assetIds.slice(i, i + ASSET_INSERT_CHUNK_SIZE);
+      statements.push(
+        this.d1
+          .prepare(
+            `INSERT OR IGNORE INTO "shared_link_asset" ("assetId", "sharedLinkId") VALUES ${chunk
+              .map(() => '(?, ?)')
+              .join(', ')}`,
+          )
+          .bind(...chunk.flatMap((assetId) => [assetId, id])),
+      );
+    }
+    await this.d1.batch(statements);
   }
 
   // -------------------------------------------------------------------------
@@ -241,5 +269,32 @@ export class SharedLinkRepository {
       .execute();
 
     return { ...link, assets };
+  }
+
+  private async enrichAlbum(album: any, assets: any[] = []) {
+    const rows = await this.db
+      .selectFrom('album_user')
+      .innerJoin('user', 'user.id', 'album_user.userId')
+      .selectAll('album_user')
+      .selectAll('user')
+      .where('album_user.albumId', '=', album.id)
+      .where('user.deletedAt', 'is', null)
+      .execute();
+
+    const albumUsers = rows
+      .map(({ albumId, userId, role, createId, updateId, ...user }) => ({
+        albumId,
+        userId,
+        role,
+        createId,
+        updateId,
+        user,
+      }))
+      .sort((a, b) => {
+        const rank = (role: string) => (role === AlbumUserRole.Owner ? 0 : 1);
+        return rank(a.role) - rank(b.role) || a.user.name.localeCompare(b.user.name);
+      });
+
+    return { ...album, albumUsers, assets };
   }
 }

@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import _ from 'lodash';
-import { AlbumUser, AuthSharedLink, User } from 'src/database';
+import { AlbumUser, AuthSharedLink } from 'src/database';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
 import { AssetResponseDto, MapAsset, mapAsset } from 'src/dtos/asset-response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
@@ -34,7 +33,7 @@ export type AlbumUserCreateDto = z.infer<typeof AlbumUserCreateSchema>;
 
 export const CreateAlbumSchema = z.object({
   albumName: z.string().min(1),
-  description: z.string().optional(),
+  description: z.string().nullable().optional().transform((value) => (value === '' ? null : value)),
   albumUsers: z.array(AlbumUserCreateSchema).optional(),
   assetIds: z.array(z.string().uuid()).optional(),
 });
@@ -48,7 +47,7 @@ export type AlbumsAddAssetsDto = z.infer<typeof AlbumsAddAssetsSchema>;
 
 export const UpdateAlbumSchema = z.object({
   albumName: z.string().min(1).optional(),
-  description: z.string().optional(),
+  description: z.string().nullable().optional().transform((value) => (value === '' ? null : value)),
   albumThumbnailAssetId: z.string().uuid().optional(),
   isActivityEnabled: z.preprocess((val) => {
     if (val === 'true' || val === true) return true;
@@ -95,7 +94,6 @@ export interface ContributorCountResponseDto {
 
 export interface AlbumResponseDto {
   id: string;
-  ownerId: string;
   albumName: string;
   description: string;
   createdAt: Date;
@@ -105,7 +103,6 @@ export interface AlbumResponseDto {
   albumUsers: AlbumUserResponseDto[];
   hasSharedLink: boolean;
   assets: AssetResponseDto[];
-  owner: UserResponseDto;
   assetCount: number;
   lastModifiedAssetTimestamp?: Date;
   startDate?: Date;
@@ -120,13 +117,11 @@ export type MapAlbumDto = {
   assets?: MapAsset[];
   sharedLinks?: AuthSharedLink[];
   albumName: string;
-  description: string;
+  description: string | null;
   albumThumbnailAssetId: string | null;
   createdAt: Date;
   updatedAt: Date;
   id: string;
-  ownerId: string;
-  owner: User;
   isActivityEnabled: boolean;
   order: AssetOrder;
 };
@@ -146,12 +141,10 @@ export const mapAlbum = (entity: MapAlbumDto, withAssets: boolean, auth?: AuthDt
     }
   }
 
-  const albumUsersSorted = _.orderBy(albumUsers, ['role', 'user.name']);
-
   const assets = entity.assets || [];
 
   const hasSharedLink = !!entity.sharedLinks && entity.sharedLinks.length > 0;
-  const hasSharedUser = albumUsers.length > 0;
+  const hasSharedUser = albumUsers.length > 1;
 
   let startDate = assets.at(0)?.localDateTime;
   let endDate = assets.at(-1)?.localDateTime;
@@ -161,14 +154,12 @@ export const mapAlbum = (entity: MapAlbumDto, withAssets: boolean, auth?: AuthDt
 
   return {
     albumName: entity.albumName,
-    description: entity.description,
+    description: entity.description ?? '',
     albumThumbnailAssetId: entity.albumThumbnailAssetId,
     createdAt: entity.createdAt,
     updatedAt: entity.updatedAt,
     id: entity.id,
-    ownerId: entity.ownerId,
-    owner: mapUser(entity.owner),
-    albumUsers: albumUsersSorted,
+    albumUsers,
     shared: hasSharedUser || hasSharedLink,
     hasSharedLink,
     startDate,

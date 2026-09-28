@@ -11,7 +11,7 @@
 --   PG enums      -> TEXT with CHECK constraints
 --   serial        -> INTEGER PRIMARY KEY AUTOINCREMENT
 --   PG arrays     -> TEXT (JSON array stored as string)
---   No triggers   -> updatedAt / audit logic handled in application code
+--   Triggers generate sync cursors and deletion audit records
 --   No immich_uuid_v7() default -> app generates UUIDs before insert
 
 PRAGMA foreign_keys = ON;
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS "user" (
   "quotaUsageInBytes" INTEGER NOT NULL DEFAULT 0,
   "status" TEXT NOT NULL DEFAULT 'active' CHECK ("status" IN ('active','removing','deleted')),
   "profileChangedAt" TEXT NOT NULL DEFAULT (datetime('now')),
+  "clusterGroupId" TEXT NOT NULL UNIQUE,
   "updateId" TEXT NOT NULL DEFAULT '',
   PRIMARY KEY ("id")
 );
@@ -115,8 +116,8 @@ CREATE TABLE IF NOT EXISTS "stack" (
   "primaryAssetId" TEXT NOT NULL UNIQUE,
   "ownerId" TEXT NOT NULL,
   PRIMARY KEY ("id"),
-  FOREIGN KEY ("ownerId") REFERENCES "user" ("id") ON UPDATE CASCADE ON DELETE CASCADE
-  -- FK to asset added after asset table creation
+  FOREIGN KEY ("ownerId") REFERENCES "user" ("id") ON UPDATE CASCADE ON DELETE CASCADE,
+  FOREIGN KEY ("primaryAssetId") REFERENCES "asset" ("id") ON UPDATE CASCADE
 );
 
 -- ============================================================================
@@ -124,15 +125,13 @@ CREATE TABLE IF NOT EXISTS "stack" (
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS "asset" (
   "id" TEXT NOT NULL,
-  "deviceAssetId" TEXT NOT NULL,
   "ownerId" TEXT NOT NULL,
-  "deviceId" TEXT NOT NULL,
   "type" TEXT NOT NULL CHECK ("type" IN ('IMAGE','VIDEO','AUDIO','OTHER')),
   "originalPath" TEXT NOT NULL,
   "fileCreatedAt" TEXT NOT NULL,
   "fileModifiedAt" TEXT NOT NULL,
   "isFavorite" INTEGER NOT NULL DEFAULT 0,
-  "duration" TEXT,
+  "duration" INTEGER,
   "encodedVideoPath" TEXT DEFAULT '',
   "checksum" BLOB NOT NULL,
   "livePhotoVideoId" TEXT,
@@ -158,11 +157,6 @@ CREATE TABLE IF NOT EXISTS "asset" (
   FOREIGN KEY ("livePhotoVideoId") REFERENCES "asset" ("id") ON UPDATE CASCADE ON DELETE SET NULL,
   FOREIGN KEY ("stackId") REFERENCES "stack" ("id") ON UPDATE CASCADE ON DELETE SET NULL
 );
-
--- Add the deferred FK from stack -> asset now that asset exists
--- Note: SQLite doesn't support ALTER TABLE ADD CONSTRAINT for FK, so we rely on
--- the stack.primaryAssetId being enforced at the application level.
--- The FK relationship is: stack.primaryAssetId -> asset.id
 
 CREATE INDEX IF NOT EXISTS "IDX_asset_fileCreatedAt" ON "asset" ("fileCreatedAt");
 CREATE INDEX IF NOT EXISTS "IDX_asset_checksum" ON "asset" ("checksum");
@@ -267,28 +261,30 @@ CREATE TABLE IF NOT EXISTS "asset_edit" (
   "action" TEXT NOT NULL,
   "parameters" TEXT NOT NULL,  -- JSON
   "sequence" INTEGER NOT NULL,
+  "updatedAt" TEXT NOT NULL DEFAULT (datetime('now')),
+  "updateId" TEXT NOT NULL DEFAULT '',
   PRIMARY KEY ("id"),
   FOREIGN KEY ("assetId") REFERENCES "asset" ("id") ON UPDATE CASCADE ON DELETE CASCADE,
   UNIQUE ("assetId", "sequence")
 );
+
+CREATE INDEX IF NOT EXISTS "IDX_asset_edit_updateId" ON "asset_edit" ("updateId");
 
 -- ============================================================================
 -- album
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS "album" (
   "id" TEXT NOT NULL,
-  "ownerId" TEXT NOT NULL,
   "albumName" TEXT NOT NULL DEFAULT 'Untitled Album',
   "createdAt" TEXT NOT NULL DEFAULT (datetime('now')),
   "albumThumbnailAssetId" TEXT,
   "updatedAt" TEXT NOT NULL DEFAULT (datetime('now')),
-  "description" TEXT NOT NULL DEFAULT '',
+  "description" TEXT,
   "deletedAt" TEXT,
   "isActivityEnabled" INTEGER NOT NULL DEFAULT 1,
   "order" TEXT NOT NULL DEFAULT 'desc' CHECK ("order" IN ('asc','desc')),
   "updateId" TEXT NOT NULL DEFAULT '',
   PRIMARY KEY ("id"),
-  FOREIGN KEY ("ownerId") REFERENCES "user" ("id") ON UPDATE CASCADE ON DELETE CASCADE,
   FOREIGN KEY ("albumThumbnailAssetId") REFERENCES "asset" ("id") ON UPDATE CASCADE ON DELETE SET NULL
 );
 
@@ -316,7 +312,7 @@ CREATE INDEX IF NOT EXISTS "IDX_album_asset_updateId" ON "album_asset" ("updateI
 CREATE TABLE IF NOT EXISTS "album_user" (
   "albumId" TEXT NOT NULL,
   "userId" TEXT NOT NULL,
-  "role" TEXT NOT NULL DEFAULT 'editor' CHECK ("role" IN ('editor','viewer')),
+  "role" TEXT NOT NULL DEFAULT 'editor' CHECK ("role" IN ('owner','editor','viewer')),
   "createId" TEXT NOT NULL DEFAULT '',
   "createdAt" TEXT NOT NULL DEFAULT (datetime('now')),
   "updateId" TEXT NOT NULL DEFAULT '',
@@ -328,6 +324,19 @@ CREATE TABLE IF NOT EXISTS "album_user" (
 
 CREATE INDEX IF NOT EXISTS "IDX_album_user_createId" ON "album_user" ("createId");
 CREATE INDEX IF NOT EXISTS "IDX_album_user_updateId" ON "album_user" ("updateId");
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_album_user_owner" ON "album_user" ("albumId") WHERE "role" = 'owner';
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_user_delete_album_without_owner"
+AFTER DELETE ON "album_user"
+FOR EACH ROW
+BEGIN
+  DELETE FROM "album"
+  WHERE "id" = OLD."albumId"
+    AND NOT EXISTS (
+      SELECT 1 FROM "album_user"
+      WHERE "albumId" = OLD."albumId" AND "role" = 'owner'
+    );
+END;
 
 -- ============================================================================
 -- activity
@@ -547,7 +556,7 @@ CREATE TABLE IF NOT EXISTS "audit" (
 CREATE INDEX IF NOT EXISTS "IDX_audit_ownerId_createdAt" ON "audit" ("ownerId", "createdAt");
 
 -- ============================================================================
--- Audit tables for sync (no triggers in SQLite - populated by application code)
+-- Audit tables for sync (populated by deletion triggers below)
 -- ============================================================================
 
 -- asset_audit
@@ -687,6 +696,378 @@ CREATE TABLE IF NOT EXISTS "asset_metadata_audit" (
 CREATE INDEX IF NOT EXISTS "IDX_asset_metadata_audit_assetId" ON "asset_metadata_audit" ("assetId");
 CREATE INDEX IF NOT EXISTS "IDX_asset_metadata_audit_key" ON "asset_metadata_audit" ("key");
 CREATE INDEX IF NOT EXISTS "IDX_asset_metadata_audit_deletedAt" ON "asset_metadata_audit" ("deletedAt");
+
+-- asset_edit_audit
+CREATE TABLE IF NOT EXISTS "asset_edit_audit" (
+  "id" TEXT NOT NULL,
+  "editId" TEXT NOT NULL,
+  "assetId" TEXT NOT NULL,
+  "deletedAt" TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY ("id")
+);
+
+CREATE INDEX IF NOT EXISTS "IDX_asset_edit_audit_assetId" ON "asset_edit_audit" ("assetId");
+CREATE INDEX IF NOT EXISTS "IDX_asset_edit_audit_deletedAt" ON "asset_edit_audit" ("deletedAt");
+
+-- Parent-delete guards let child triggers distinguish an explicit relationship
+-- removal from an ON DELETE CASCADE within the same SQLite statement.
+CREATE TABLE IF NOT EXISTS "sync_delete_guard" (
+  "entityType" TEXT NOT NULL,
+  "entityId" TEXT NOT NULL,
+  PRIMARY KEY ("entityType", "entityId")
+);
+
+-- ============================================================================
+-- Sync deletion audit triggers
+-- ============================================================================
+
+CREATE TRIGGER IF NOT EXISTS "TR_user_delete_audit"
+AFTER DELETE ON "user" FOR EACH ROW
+BEGIN
+  INSERT INTO "user_audit" ("id", "userId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."id"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_user_metadata_delete_audit"
+AFTER DELETE ON "user_metadata" FOR EACH ROW
+BEGIN
+  INSERT INTO "user_metadata_audit" ("id", "userId", "key") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."userId", OLD."key"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_partner_delete_audit"
+AFTER DELETE ON "partner" FOR EACH ROW
+BEGIN
+  INSERT INTO "partner_audit" ("id", "sharedById", "sharedWithId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."sharedById", OLD."sharedWithId"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_delete_audit"
+AFTER DELETE ON "asset" FOR EACH ROW
+BEGIN
+  INSERT INTO "asset_audit" ("id", "assetId", "ownerId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."id", OLD."ownerId"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_metadata_delete_audit"
+AFTER DELETE ON "asset_metadata" FOR EACH ROW
+BEGIN
+  INSERT INTO "asset_metadata_audit" ("id", "assetId", "key") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."assetId", OLD."key"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_delete_guard"
+BEFORE DELETE ON "album" FOR EACH ROW
+BEGIN
+  INSERT OR IGNORE INTO "sync_delete_guard" ("entityType", "entityId") VALUES ('album', OLD."id");
+  INSERT INTO "album_audit" ("id", "albumId", "userId")
+  SELECT lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), OLD."id", "userId"
+  FROM "album_user" WHERE "albumId" = OLD."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_delete_guard_cleanup"
+AFTER DELETE ON "album" FOR EACH ROW
+BEGIN
+  DELETE FROM "sync_delete_guard" WHERE "entityType" = 'album' AND "entityId" = OLD."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_user_delete_audit"
+AFTER DELETE ON "album_user" FOR EACH ROW
+WHEN NOT EXISTS (
+  SELECT 1 FROM "sync_delete_guard" WHERE "entityType" = 'album' AND "entityId" = OLD."albumId"
+)
+BEGIN
+  INSERT INTO "album_audit" ("id", "albumId", "userId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."albumId", OLD."userId"
+  );
+  INSERT INTO "album_user_audit" ("id", "albumId", "userId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."albumId", OLD."userId"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_asset_delete_audit"
+AFTER DELETE ON "album_asset" FOR EACH ROW
+WHEN NOT EXISTS (
+  SELECT 1 FROM "sync_delete_guard" WHERE "entityType" = 'album' AND "entityId" = OLD."albumId"
+)
+BEGIN
+  INSERT INTO "album_asset_audit" ("id", "albumId", "assetId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."albumId", OLD."assetId"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_memory_delete_guard"
+BEFORE DELETE ON "memory" FOR EACH ROW
+BEGIN
+  INSERT OR IGNORE INTO "sync_delete_guard" ("entityType", "entityId") VALUES ('memory', OLD."id");
+  INSERT INTO "memory_audit" ("id", "memoryId", "userId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."id", OLD."ownerId"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_memory_delete_guard_cleanup"
+AFTER DELETE ON "memory" FOR EACH ROW
+BEGIN
+  DELETE FROM "sync_delete_guard" WHERE "entityType" = 'memory' AND "entityId" = OLD."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_memory_asset_delete_audit"
+AFTER DELETE ON "memory_asset" FOR EACH ROW
+WHEN NOT EXISTS (
+  SELECT 1 FROM "sync_delete_guard" WHERE "entityType" = 'memory' AND "entityId" = OLD."memoriesId"
+)
+BEGIN
+  INSERT INTO "memory_asset_audit" ("id", "memoryId", "assetId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."memoriesId", OLD."assetId"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_stack_delete_audit"
+AFTER DELETE ON "stack" FOR EACH ROW
+BEGIN
+  INSERT INTO "stack_audit" ("id", "stackId", "userId") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."id", OLD."ownerId"
+  );
+END;
+
+-- ============================================================================
+-- Sync cursor triggers
+-- ============================================================================
+-- UUIDv7 layout: 48-bit millisecond timestamp, version 7, RFC 4122 variant,
+-- and random trailing bits. Lowercase canonical UUIDs preserve time ordering.
+
+CREATE TRIGGER IF NOT EXISTS "TR_user_insert_updateId"
+AFTER INSERT ON "user" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "user" SET
+    "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_user_update_updateId"
+AFTER UPDATE ON "user" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "user" SET
+    "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_user_metadata_insert_updateId"
+AFTER INSERT ON "user_metadata" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "user_metadata" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE "userId" = NEW."userId" AND "key" = NEW."key";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_user_metadata_update_updateId"
+AFTER UPDATE ON "user_metadata" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "user_metadata" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE "userId" = NEW."userId" AND "key" = NEW."key";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_session_insert_updateId"
+AFTER INSERT ON "session" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "session" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_session_update_updateId"
+AFTER UPDATE ON "session" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "session" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_stack_insert_updateId"
+AFTER INSERT ON "stack" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "stack" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_stack_update_updateId"
+AFTER UPDATE ON "stack" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "stack" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_activity_insert_updateId"
+AFTER INSERT ON "activity" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "activity" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_activity_update_updateId"
+AFTER UPDATE ON "activity" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "activity" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_tag_insert_updateId"
+AFTER INSERT ON "tag" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "tag" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_tag_update_updateId"
+AFTER UPDATE ON "tag" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "tag" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_insert_updateId"
+AFTER INSERT ON "asset" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "asset" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_update_updateId"
+AFTER UPDATE ON "asset" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "asset" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_exif_insert_updateId"
+AFTER INSERT ON "asset_exif" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "asset_exif" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "assetId" = NEW."assetId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_exif_update_updateId"
+AFTER UPDATE ON "asset_exif" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "asset_exif" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "assetId" = NEW."assetId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_metadata_insert_updateId"
+AFTER INSERT ON "asset_metadata" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "asset_metadata" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "assetId" = NEW."assetId" AND "key" = NEW."key";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_metadata_update_updateId"
+AFTER UPDATE ON "asset_metadata" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "asset_metadata" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "assetId" = NEW."assetId" AND "key" = NEW."key";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_edit_insert_updateId"
+AFTER INSERT ON "asset_edit" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "asset_edit" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_edit_update_updateId"
+AFTER UPDATE ON "asset_edit" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "asset_edit" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_edit_delete_audit"
+AFTER DELETE ON "asset_edit" FOR EACH ROW
+BEGIN
+  INSERT INTO "asset_edit_audit" ("id", "editId", "assetId", "deletedAt") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    OLD."id", OLD."assetId", strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_insert_updateId"
+AFTER INSERT ON "album" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "album" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_update_updateId"
+AFTER UPDATE ON "album" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "album" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_asset_insert_updateId"
+AFTER INSERT ON "album_asset" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "album_asset" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "albumId" = NEW."albumId" AND "assetId" = NEW."assetId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_asset_update_updateId"
+AFTER UPDATE ON "album_asset" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "album_asset" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "albumId" = NEW."albumId" AND "assetId" = NEW."assetId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_user_insert_updateIds"
+AFTER INSERT ON "album_user" FOR EACH ROW WHEN NEW."createId" = '' OR NEW."updateId" = ''
+BEGIN
+  UPDATE "album_user" SET
+    "createId" = CASE WHEN NEW."createId" = '' THEN lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)) ELSE NEW."createId" END,
+    "updateId" = CASE WHEN NEW."updateId" = '' THEN lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)) ELSE NEW."updateId" END,
+    "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE "albumId" = NEW."albumId" AND "userId" = NEW."userId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_album_user_update_updateId"
+AFTER UPDATE ON "album_user" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "album_user" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "albumId" = NEW."albumId" AND "userId" = NEW."userId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_memory_insert_updateId"
+AFTER INSERT ON "memory" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "memory" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_memory_update_updateId"
+AFTER UPDATE ON "memory" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "memory" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "id" = NEW."id";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_memory_asset_insert_updateId"
+AFTER INSERT ON "memory_asset" FOR EACH ROW WHEN NEW."updateId" = ''
+BEGIN
+  UPDATE "memory_asset" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "memoriesId" = NEW."memoriesId" AND "assetId" = NEW."assetId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_memory_asset_update_updateId"
+AFTER UPDATE ON "memory_asset" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "memory_asset" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "memoriesId" = NEW."memoriesId" AND "assetId" = NEW."assetId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_partner_insert_updateIds"
+AFTER INSERT ON "partner" FOR EACH ROW WHEN NEW."createId" = '' OR NEW."updateId" = ''
+BEGIN
+  UPDATE "partner" SET
+    "createId" = CASE WHEN NEW."createId" = '' THEN lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)) ELSE NEW."createId" END,
+    "updateId" = CASE WHEN NEW."updateId" = '' THEN lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)) ELSE NEW."updateId" END,
+    "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  WHERE "sharedById" = NEW."sharedById" AND "sharedWithId" = NEW."sharedWithId";
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_partner_update_updateId"
+AFTER UPDATE ON "partner" FOR EACH ROW WHEN NEW."updateId" = OLD."updateId"
+BEGIN
+  UPDATE "partner" SET "updateId" = lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)), "updatedAt" = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE "sharedById" = NEW."sharedById" AND "sharedWithId" = NEW."sharedWithId";
+END;
 
 -- ============================================================================
 -- FTS5 virtual table for filename search

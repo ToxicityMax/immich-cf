@@ -45,6 +45,7 @@ export interface UserTable {
   quotaUsageInBytes: Generated<number>;
   status: Generated<string>;
   profileChangedAt: Generated<Timestamp>;
+  clusterGroupId: string;
   updateId: Generated<string>;
 }
 
@@ -109,15 +110,13 @@ export interface StackTable {
 // ---------------------------------------------------------------------------
 export interface AssetTable {
   id: string;
-  deviceAssetId: string;
   ownerId: string;
-  deviceId: string;
   type: string;
   originalPath: string;
   fileCreatedAt: Timestamp;
   fileModifiedAt: Timestamp;
   isFavorite: Generated<SqliteBool>;
-  duration: string | null;
+  duration: number | null;
   encodedVideoPath: Generated<string | null>;
   checksum: Uint8Array; // BLOB - sha1 checksum
   livePhotoVideoId: string | null;
@@ -162,7 +161,7 @@ export interface AssetExifTable {
   city: string | null;
   state: string | null;
   country: string | null;
-  description: Generated<string>;
+  description: string | null;
   fps: number | null;
   exposureTime: string | null;
   livePhotoCID: string | null;
@@ -214,6 +213,8 @@ export interface AssetEditTable {
   action: string;
   parameters: string; // JSON
   sequence: number;
+  updatedAt: Generated<Timestamp>;
+  updateId: Generated<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +222,6 @@ export interface AssetEditTable {
 // ---------------------------------------------------------------------------
 export interface AlbumTable {
   id: string;
-  ownerId: string;
   albumName: Generated<string>;
   createdAt: Generated<Timestamp>;
   albumThumbnailAssetId: string | null;
@@ -420,6 +420,8 @@ export interface AssetAuditTable {
   id: string;
   assetId: string;
   ownerId: string;
+  reason: Generated<'delete' | 'lock'>;
+  visibility: string | null;
   deletedAt: Generated<Timestamp>;
 }
 
@@ -441,6 +443,7 @@ export interface StackAuditTable {
   id: string;
   stackId: string;
   userId: string;
+  visibility: string | null;
   deletedAt: Generated<Timestamp>;
 }
 
@@ -455,6 +458,8 @@ export interface AlbumAssetAuditTable {
   id: string;
   albumId: string;
   assetId: string;
+  visibility: string | null;
+  relationUpdateId: string | null;
   deletedAt: Generated<Timestamp>;
 }
 
@@ -469,6 +474,7 @@ export interface MemoryAssetAuditTable {
   id: string;
   memoryId: string;
   assetId: string;
+  visibility: string | null;
   deletedAt: Generated<Timestamp>;
 }
 
@@ -489,6 +495,17 @@ export interface AssetMetadataAuditTable {
   id: string;
   assetId: string;
   key: string;
+  ownerId: string | null;
+  visibility: string | null;
+  deletedAt: Generated<Timestamp>;
+}
+
+export interface AssetEditAuditTable {
+  id: Generated<string>;
+  editId: string;
+  assetId: string;
+  ownerId: string | null;
+  visibility: string | null;
   deletedAt: Generated<Timestamp>;
 }
 
@@ -538,4 +555,5 @@ export interface DB {
   user_audit: UserAuditTable;
   user_metadata_audit: UserMetadataAuditTable;
   asset_metadata_audit: AssetMetadataAuditTable;
+  asset_edit_audit: AssetEditAuditTable;
 }

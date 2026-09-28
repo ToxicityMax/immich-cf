@@ -8,48 +8,20 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { AssetDeltaSyncSchema, AssetFullSyncSchema } from '../dtos/sync.dto';
+import { SyncAckDeleteSchema, SyncAckSetSchema, SyncStreamSchema } from '../dtos/sync.dto';
 import { Permission } from '../enum';
 
 const app = new Hono<AppEnv>();
-
-// POST /api/sync/full-sync -- Legacy full sync (deprecated but functional)
-app.post(
-  '/full-sync',
-  authMiddleware({ permission: Permission.TimelineRead }),
-  validate('json', AssetFullSyncSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const services = c.get('services');
-    const body = c.req.valid('json');
-    const result = await services.sync.getFullSync(auth, body);
-    return c.json(result);
-  },
-);
-
-// POST /api/sync/delta-sync -- Legacy delta sync (deprecated but functional)
-app.post(
-  '/delta-sync',
-  authMiddleware({ permission: Permission.TimelineRead }),
-  validate('json', AssetDeltaSyncSchema),
-  async (c) => {
-    const auth = c.get('auth');
-    const services = c.get('services');
-    const body = c.req.valid('json');
-    const result = await services.sync.getDeltaSync(auth, body);
-    return c.json(result);
-  },
-);
 
 // POST /api/sync/stream -- JSON Lines streaming sync
 app.post(
   '/stream',
   authMiddleware({ permission: Permission.SyncStream }),
+  validate('json', SyncStreamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
-    console.log(`[sync-route] POST /stream: userId=${auth.user.id}, body=${JSON.stringify(body)}`);
+    const body = c.req.valid('json');
     const response = await services.sync.stream(auth, body);
     console.log(`[sync-route] POST /stream: returning response status=${response.status}`);
     return response;
@@ -72,10 +44,11 @@ app.get(
 app.post(
   '/ack',
   authMiddleware({ permission: Permission.SyncCheckpointUpdate }),
+  validate('json', SyncAckSetSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     await services.sync.setAcks(auth, body);
     return c.body(null, 204);
   },
@@ -85,10 +58,11 @@ app.post(
 app.delete(
   '/ack',
   authMiddleware({ permission: Permission.SyncCheckpointDelete }),
+  validate('json', SyncAckDeleteSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json().catch(() => ({}));
+    const body = c.req.valid('json');
     await services.sync.deleteAcks(auth, body);
     return c.body(null, 204);
   },

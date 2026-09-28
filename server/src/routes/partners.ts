@@ -8,6 +8,9 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
 import { Permission } from '../enum';
+import { validate } from '../middleware/validate';
+import { PartnerCreateSchema, PartnerSearchSchema, PartnerUpdateSchema } from '../dtos/partner.dto';
+import { UUIDParamSchema } from '../validation';
 
 const app = new Hono<AppEnv>();
 
@@ -15,11 +18,11 @@ const app = new Hono<AppEnv>();
 app.get(
   '/',
   authMiddleware({ permission: Permission.PartnerRead }),
+  validate('query', PartnerSearchSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const direction = c.req.query('direction');
-    const result = await services.partner.search(auth, { direction: direction as any });
+    const result = await services.partner.search(auth, c.req.valid('query'));
     return c.json(result);
   },
 );
@@ -28,12 +31,13 @@ app.get(
 app.post(
   '/',
   authMiddleware({ permission: Permission.PartnerCreate }),
+  validate('json', PartnerCreateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.partner.create(auth, body);
-    return c.json(result);
+    return c.json(result, 201);
   },
 );
 
@@ -41,12 +45,13 @@ app.post(
 app.post(
   '/:id',
   authMiddleware({ permission: Permission.PartnerCreate }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
     const result = await services.partner.create(auth, { sharedWithId: id });
-    return c.json(result);
+    return c.json(result, 201);
   },
 );
 
@@ -54,11 +59,13 @@ app.post(
 app.put(
   '/:id',
   authMiddleware({ permission: Permission.PartnerUpdate }),
+  validate('param', UUIDParamSchema),
+  validate('json', PartnerUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
     const id = c.req.param('id');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const result = await services.partner.update(auth, id, body);
     return c.json(result);
   },
@@ -68,6 +75,7 @@ app.put(
 app.delete(
   '/:id',
   authMiddleware({ permission: Permission.PartnerDelete }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');

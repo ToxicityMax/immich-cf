@@ -5,25 +5,26 @@ import { hexColor } from 'src/validation';
 // --- Request Schemas ---
 
 export const TagCreateSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().regex(/^[^/]*$/, 'Tag name cannot contain slash characters ("/")'),
   parentId: z.string().uuid().nullable().optional(),
   color: hexColor.nullable().optional().transform((v) => (v === '' ? null : v)),
 });
 export type TagCreateDto = z.infer<typeof TagCreateSchema>;
 
 export const TagUpdateSchema = z.object({
+  name: z.string().regex(/^[^/]*$/, 'Tag name cannot contain slash characters ("/")').optional(),
   color: hexColor.nullable().optional().transform((v) => (v === '' ? null : v)),
 });
 export type TagUpdateDto = z.infer<typeof TagUpdateSchema>;
 
 export const TagUpsertSchema = z.object({
-  tags: z.array(z.string().min(1)).min(1),
+  tags: z.array(z.string()),
 });
 export type TagUpsertDto = z.infer<typeof TagUpsertSchema>;
 
 export const TagBulkAssetsSchema = z.object({
-  tagIds: z.array(z.string().uuid()).min(1),
-  assetIds: z.array(z.string().uuid()).min(1),
+  tagIds: z.array(z.string().uuid()),
+  assetIds: z.array(z.string().uuid()),
 });
 export type TagBulkAssetsDto = z.infer<typeof TagBulkAssetsSchema>;
 

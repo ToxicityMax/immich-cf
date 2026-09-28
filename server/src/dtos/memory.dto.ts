@@ -8,7 +8,7 @@ import { optionalBooleanQuery } from 'src/validation';
 // --- Nested Schemas ---
 
 const OnThisDaySchema = z.object({
-  year: z.number().int().positive(),
+  year: z.number().int().min(1000).max(9999),
 });
 
 type MemoryData = z.infer<typeof OnThisDaySchema>;
@@ -25,17 +25,22 @@ const MemoryBaseSchema = z.object({
 });
 
 export const MemorySearchSchema = z.object({
+  id: z.string().uuid().optional(),
   type: z.nativeEnum(MemoryType).optional(),
   for: z.coerce.date().optional(),
   isTrashed: optionalBooleanQuery,
   isSaved: optionalBooleanQuery,
+  isUpcoming: optionalBooleanQuery,
   size: z.coerce.number().int().positive().optional(),
+  page: z.coerce.number().int().positive().optional(),
   order: z.nativeEnum(AssetOrderWithRandom).optional(),
 });
 export type MemorySearchDto = z.infer<typeof MemorySearchSchema>;
 
 export const MemoryUpdateSchema = MemoryBaseSchema.extend({
   memoryAt: z.coerce.date().optional(),
+}).refine((value) => Object.values(value).some((item) => item !== undefined), {
+  message: 'At least one field must be provided',
 });
 export type MemoryUpdateDto = z.infer<typeof MemoryUpdateSchema>;
 
@@ -44,6 +49,8 @@ export const MemoryCreateSchema = MemoryBaseSchema.extend({
   data: OnThisDaySchema,
   memoryAt: z.coerce.date(),
   assetIds: z.array(z.string().uuid()).optional(),
+  showAt: z.coerce.date().optional(),
+  hideAt: z.coerce.date().optional(),
 });
 export type MemoryCreateDto = z.infer<typeof MemoryCreateSchema>;
 

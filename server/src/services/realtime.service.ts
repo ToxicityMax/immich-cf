@@ -1,5 +1,5 @@
 import type { AssetResponseDto } from 'src/dtos/asset-response.dto';
-import type { SyncAssetExifV1, SyncAssetV1 } from 'src/dtos/sync.dto';
+import type { SyncAssetEditV1, SyncAssetExifV1, SyncAssetV2 } from 'src/dtos/sync.dto';
 import type { Env } from 'src/env';
 import { ImmichEnvironment } from 'src/enum';
 
@@ -14,16 +14,17 @@ export interface RealtimeClientEventMap {
   on_asset_hidden: [string];
   on_asset_restore: [string[]];
   on_asset_stack_update: [];
+  on_album_update: [string];
   on_person_thumbnail: [string];
-  on_server_version: [{ major: number; minor: number; patch: number }];
+  on_server_version: [{ major: number; minor: number; patch: number; prerelease: number | null }];
   on_config_update: [];
   on_new_release: [unknown];
   on_session_delete: [string];
   on_notification: [unknown];
   AppRestartV1: [{ isMaintenanceMode: boolean }];
   MaintenanceStatusV1: [unknown];
-  AssetUploadReadyV1: [{ asset: SyncAssetV1; exif: SyncAssetExifV1 }];
-  AssetEditReadyV1: [{ asset: SyncAssetV1 }];
+  AssetUploadReadyV2: [{ asset: SyncAssetV2; exif: SyncAssetExifV1 }];
+  AssetEditReadyV2: [{ asset: SyncAssetV2; edit: SyncAssetEditV1[] }];
 }
 
 export interface RealtimePublishRequest {

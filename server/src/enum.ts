@@ -46,6 +46,7 @@ export enum AssetFileType {
 }
 
 export enum AlbumUserRole {
+  Owner = 'owner',
   Editor = 'editor',
   Viewer = 'viewer',
 }
@@ -90,7 +91,13 @@ export enum Permission {
   ApiKeyCreate = 'apiKey.create',
   ApiKeyRead = 'apiKey.read',
   ApiKeyUpdate = 'apiKey.update',
+  ApiKeyRotate = 'apiKey.rotate',
   ApiKeyDelete = 'apiKey.delete',
+
+  AdminConfigRead = 'adminConfig.read',
+  AdminConfigUpdate = 'adminConfig.update',
+
+  UserConfigRead = 'userConfig.read',
 
   AssetRead = 'asset.read',
   AssetUpdate = 'asset.update',
@@ -399,24 +406,31 @@ export enum ExifOrientation {
 
 export enum SyncRequestType {
   AlbumsV1 = 'AlbumsV1',
+  AlbumsV2 = 'AlbumsV2',
   AlbumUsersV1 = 'AlbumUsersV1',
   AlbumToAssetsV1 = 'AlbumToAssetsV1',
   AlbumAssetsV1 = 'AlbumAssetsV1',
+  AlbumAssetsV2 = 'AlbumAssetsV2',
   AlbumAssetExifsV1 = 'AlbumAssetExifsV1',
   AssetsV1 = 'AssetsV1',
+  AssetsV2 = 'AssetsV2',
   AssetExifsV1 = 'AssetExifsV1',
+  AssetEditsV1 = 'AssetEditsV1',
   AssetMetadataV1 = 'AssetMetadataV1',
+  AssetOcrV1 = 'AssetOcrV1',
   AuthUsersV1 = 'AuthUsersV1',
   MemoriesV1 = 'MemoriesV1',
   MemoryToAssetsV1 = 'MemoryToAssetsV1',
   PartnersV1 = 'PartnersV1',
   PartnerAssetsV1 = 'PartnerAssetsV1',
+  PartnerAssetsV2 = 'PartnerAssetsV2',
   PartnerAssetExifsV1 = 'PartnerAssetExifsV1',
   PartnerStacksV1 = 'PartnerStacksV1',
   StacksV1 = 'StacksV1',
   UsersV1 = 'UsersV1',
   PeopleV1 = 'PeopleV1',
   AssetFacesV1 = 'AssetFacesV1',
+  AssetFacesV2 = 'AssetFacesV2',
   UserMetadataV1 = 'UserMetadataV1',
 }
 
@@ -427,16 +441,23 @@ export enum SyncEntityType {
   UserDeleteV1 = 'UserDeleteV1',
 
   AssetV1 = 'AssetV1',
+  AssetV2 = 'AssetV2',
   AssetDeleteV1 = 'AssetDeleteV1',
   AssetExifV1 = 'AssetExifV1',
+  AssetEditV1 = 'AssetEditV1',
+  AssetEditDeleteV1 = 'AssetEditDeleteV1',
   AssetMetadataV1 = 'AssetMetadataV1',
   AssetMetadataDeleteV1 = 'AssetMetadataDeleteV1',
+  AssetOcrV1 = 'AssetOcrV1',
+  AssetOcrDeleteV1 = 'AssetOcrDeleteV1',
 
   PartnerV1 = 'PartnerV1',
   PartnerDeleteV1 = 'PartnerDeleteV1',
 
   PartnerAssetV1 = 'PartnerAssetV1',
+  PartnerAssetV2 = 'PartnerAssetV2',
   PartnerAssetBackfillV1 = 'PartnerAssetBackfillV1',
+  PartnerAssetBackfillV2 = 'PartnerAssetBackfillV2',
   PartnerAssetDeleteV1 = 'PartnerAssetDeleteV1',
   PartnerAssetExifV1 = 'PartnerAssetExifV1',
   PartnerAssetExifBackfillV1 = 'PartnerAssetExifBackfillV1',
@@ -445,6 +466,7 @@ export enum SyncEntityType {
   PartnerStackV1 = 'PartnerStackV1',
 
   AlbumV1 = 'AlbumV1',
+  AlbumV2 = 'AlbumV2',
   AlbumDeleteV1 = 'AlbumDeleteV1',
 
   AlbumUserV1 = 'AlbumUserV1',
@@ -452,8 +474,11 @@ export enum SyncEntityType {
   AlbumUserDeleteV1 = 'AlbumUserDeleteV1',
 
   AlbumAssetCreateV1 = 'AlbumAssetCreateV1',
+  AlbumAssetCreateV2 = 'AlbumAssetCreateV2',
   AlbumAssetUpdateV1 = 'AlbumAssetUpdateV1',
+  AlbumAssetUpdateV2 = 'AlbumAssetUpdateV2',
   AlbumAssetBackfillV1 = 'AlbumAssetBackfillV1',
+  AlbumAssetBackfillV2 = 'AlbumAssetBackfillV2',
   AlbumAssetExifCreateV1 = 'AlbumAssetExifCreateV1',
   AlbumAssetExifUpdateV1 = 'AlbumAssetExifUpdateV1',
   AlbumAssetExifBackfillV1 = 'AlbumAssetExifBackfillV1',
@@ -475,6 +500,7 @@ export enum SyncEntityType {
   PersonDeleteV1 = 'PersonDeleteV1',
 
   AssetFaceV1 = 'AssetFaceV1',
+  AssetFaceV2 = 'AssetFaceV2',
   AssetFaceDeleteV1 = 'AssetFaceDeleteV1',
 
   UserMetadataV1 = 'UserMetadataV1',
@@ -511,4 +537,3 @@ export enum ApiTag {
   Users = 'Users',
   Views = 'Views',
 }
-

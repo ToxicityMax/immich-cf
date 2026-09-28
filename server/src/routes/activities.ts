@@ -8,6 +8,9 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../hono';
 import { authMiddleware } from '../middleware/auth';
 import { Permission } from '../enum';
+import { validate } from '../middleware/validate';
+import { ActivityCreateSchema, ActivityDtoSchema, ActivitySearchSchema } from '../dtos/activity.dto';
+import { UUIDParamSchema } from '../validation';
 
 const app = new Hono<AppEnv>();
 
@@ -15,16 +18,11 @@ const app = new Hono<AppEnv>();
 app.get(
   '/',
   authMiddleware({ permission: Permission.ActivityRead }),
+  validate('query', ActivitySearchSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const dto = {
-      albumId: c.req.query('albumId') || '',
-      assetId: c.req.query('assetId'),
-      userId: c.req.query('userId'),
-      type: c.req.query('type'),
-      level: c.req.query('level'),
-    };
+    const dto = c.req.valid('query');
     const result = await services.activity.getAll(auth, dto);
     return c.json(result);
   },
@@ -34,10 +32,11 @@ app.get(
 app.post(
   '/',
   authMiddleware({ permission: Permission.ActivityCreate }),
+  validate('json', ActivityCreateSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const body = await c.req.json();
+    const body = c.req.valid('json');
     const { duplicate, value } = await services.activity.create(auth, body);
     if (duplicate) {
       return c.json(value, 200);
@@ -50,13 +49,11 @@ app.post(
 app.get(
   '/statistics',
   authMiddleware({ permission: Permission.ActivityStatistics }),
+  validate('query', ActivityDtoSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');
-    const dto = {
-      albumId: c.req.query('albumId') || '',
-      assetId: c.req.query('assetId'),
-    };
+    const dto = c.req.valid('query');
     const result = await services.activity.getStatistics(auth, dto);
     return c.json(result);
   },
@@ -66,6 +63,7 @@ app.get(
 app.delete(
   '/:id',
   authMiddleware({ permission: Permission.ActivityDelete }),
+  validate('param', UUIDParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const services = c.get('services');

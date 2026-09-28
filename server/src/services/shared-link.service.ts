@@ -6,13 +6,19 @@
  */
 
 import type { AuthDto } from 'src/dtos/auth.dto';
-import { mapSharedLink } from 'src/dtos/shared-link.dto';
+import {
+  mapSharedLink,
+  type SharedLinkCreateDto,
+  type SharedLinkEditDto,
+  type SharedLinkLoginDto,
+} from 'src/dtos/shared-link.dto';
 import { Permission, SharedLinkType } from 'src/enum';
 import type { ServiceContext } from 'src/context';
 import { AccessRepository } from 'src/repositories/access.repository';
 import { SharedLinkRepository } from 'src/repositories/shared-link.repository';
 import { SharedLinkAssetRepository } from 'src/repositories/shared-link-asset.repository';
 import { requireAccess, checkAccess } from 'src/utils/access';
+import { BadRequestException, ForbiddenException, UnauthorizedException } from 'src/utils/errors';
 
 export class SharedLinkService {
   private sharedLinkRepository: SharedLinkRepository;
@@ -20,8 +26,8 @@ export class SharedLinkService {
   private accessRepository: AccessRepository;
 
   constructor(private ctx: ServiceContext) {
-    this.sharedLinkRepository = new SharedLinkRepository(ctx.db);
-    this.sharedLinkAssetRepository = new SharedLinkAssetRepository(ctx.db);
+    this.sharedLinkRepository = new SharedLinkRepository(ctx.db, ctx.env.DB);
+    this.sharedLinkAssetRepository = new SharedLinkAssetRepository(ctx.db, ctx.env.DB);
     this.accessRepository = new AccessRepository(ctx.db);
   }
 
@@ -34,22 +40,36 @@ export class SharedLinkService {
     return links.map((link: any) => mapSharedLink(link, { stripAssetMetadata: false }));
   }
 
-  async getMine(auth: AuthDto, dto: { password?: string; token?: string }) {
+  async login(auth: AuthDto, dto: SharedLinkLoginDto) {
     if (!auth.sharedLink) {
-      throw new Error('Forbidden');
+      throw new ForbiddenException();
     }
 
     const sharedLink = await this.findOrFail(auth.sharedLink.userId, auth.sharedLink.id);
-
-    const response = mapSharedLink(sharedLink as any, {
-      stripAssetMetadata: !Boolean(sharedLink.showExif),
-    });
-    if (sharedLink.password) {
-      const token = this.validateAndRefreshToken(sharedLink, dto);
-      return { ...response, token };
+    if (!sharedLink.password) {
+      throw new BadRequestException('Shared link is not password protected');
+    }
+    if (sharedLink.password !== dto.password) {
+      throw new UnauthorizedException('Invalid password');
     }
 
-    return response;
+    return {
+      sharedLink: mapSharedLink(sharedLink as any, { stripAssetMetadata: !Boolean(sharedLink.showExif) }),
+      token: await this.asToken(sharedLink),
+    };
+  }
+
+  async getMine(auth: AuthDto, authTokens: string[]) {
+    if (!auth.sharedLink) {
+      throw new ForbiddenException();
+    }
+
+    const sharedLink = await this.findOrFail(auth.sharedLink.userId, auth.sharedLink.id);
+    if (sharedLink.password && !authTokens.includes(await this.asToken(sharedLink))) {
+      throw new UnauthorizedException(authTokens.length === 0 ? 'Password required' : 'Invalid password');
+    }
+
+    return mapSharedLink(sharedLink as any, { stripAssetMetadata: !Boolean(sharedLink.showExif) });
   }
 
   async get(auth: AuthDto, id: string) {
@@ -57,11 +77,11 @@ export class SharedLinkService {
     return mapSharedLink(sharedLink as any, { stripAssetMetadata: false });
   }
 
-  async create(auth: AuthDto, dto: any) {
+  async create(auth: AuthDto, dto: SharedLinkCreateDto) {
     switch (dto.type) {
       case SharedLinkType.Album: {
         if (!dto.albumId) {
-          throw new Error('Invalid albumId');
+          throw new BadRequestException('Invalid albumId');
         }
         await requireAccess(this.accessRepository, {
           auth,
@@ -72,7 +92,7 @@ export class SharedLinkService {
       }
       case SharedLinkType.Individual: {
         if (!dto.assetIds || dto.assetIds.length === 0) {
-          throw new Error('Invalid assetIds');
+          throw new BadRequestException('Invalid assetIds');
         }
         await requireAccess(this.accessRepository, {
           auth,
@@ -85,41 +105,50 @@ export class SharedLinkService {
 
     const keyBytes = crypto.getRandomValues(new Uint8Array(50));
 
-    const sharedLink = await this.sharedLinkRepository.create({
-      id: this.ctx.crypto.randomUUID(),
-      key: keyBytes,
-      userId: auth.user.id,
-      type: dto.type,
-      albumId: dto.albumId || null,
-      assetIds: dto.assetIds,
-      description: dto.description || null,
-      password: dto.password || null,
-      expiresAt: dto.expiresAt || null,
-      allowUpload: dto.allowUpload ?? 1,
-      allowDownload: dto.showMetadata === false ? 0 : (dto.allowDownload ?? 1),
-      showExif: dto.showMetadata ?? 1,
-      slug: dto.slug || null,
-    });
+    try {
+      const sharedLink = await this.sharedLinkRepository.create({
+        id: this.ctx.crypto.randomUUID(),
+        key: keyBytes,
+        userId: auth.user.id,
+        type: dto.type,
+        albumId: dto.albumId || null,
+        assetIds: dto.assetIds,
+        description: dto.description || null,
+        password: dto.password || null,
+        createdAt: new Date().toISOString(),
+        expiresAt: dto.expiresAt?.toISOString() || null,
+        allowUpload: dto.allowUpload ?? 1,
+        allowDownload: dto.showMetadata === false ? 0 : (dto.allowDownload ?? 1),
+        showExif: dto.showMetadata ?? 1,
+        slug: dto.slug || null,
+      } as any);
 
-    return mapSharedLink(sharedLink as any, { stripAssetMetadata: false });
+      return mapSharedLink(sharedLink as any, { stripAssetMetadata: false });
+    } catch (error) {
+      this.handleSaveError(error);
+    }
   }
 
-  async update(auth: AuthDto, id: string, dto: any) {
+  async update(auth: AuthDto, id: string, dto: SharedLinkEditDto) {
     await this.findOrFail(auth.user.id, id);
 
-    const sharedLink = await this.sharedLinkRepository.update({
-      id,
-      userId: auth.user.id,
-      description: dto.description,
-      password: dto.password,
-      expiresAt: dto.changeExpiryTime && !dto.expiresAt ? null : dto.expiresAt,
-      allowUpload: dto.allowUpload,
-      allowDownload: dto.allowDownload,
-      showExif: dto.showMetadata,
-      slug: dto.slug || null,
-    });
+    try {
+      const sharedLink = await this.sharedLinkRepository.update({
+        id,
+        userId: auth.user.id,
+        description: dto.description,
+        password: dto.password,
+        expiresAt: dto.expiresAt?.toISOString() ?? dto.expiresAt,
+        allowUpload: dto.allowUpload,
+        allowDownload: dto.allowDownload,
+        showExif: dto.showMetadata,
+        slug: dto.slug || null,
+      });
 
-    return mapSharedLink(sharedLink as any, { stripAssetMetadata: false });
+      return mapSharedLink(sharedLink as any, { stripAssetMetadata: false });
+    } catch (error) {
+      this.handleSaveError(error);
+    }
   }
 
   async remove(auth: AuthDto, id: string): Promise<void> {
@@ -131,7 +160,7 @@ export class SharedLinkService {
     const sharedLink = await this.findOrFail(auth.user.id, id);
 
     if (sharedLink.type !== SharedLinkType.Individual) {
-      throw new Error('Invalid shared link type');
+      throw new BadRequestException('Invalid shared link type');
     }
 
     const existingAssetIds = new Set(
@@ -161,10 +190,7 @@ export class SharedLinkService {
     }
 
     if (toAdd.length > 0) {
-      await this.sharedLinkRepository.update({
-        ...sharedLink,
-        assetIds: toAdd,
-      });
+      await this.sharedLinkRepository.addAssets(id, toAdd);
     }
 
     return results;
@@ -174,7 +200,7 @@ export class SharedLinkService {
     const sharedLink = await this.findOrFail(auth.user.id, id);
 
     if (sharedLink.type !== SharedLinkType.Individual) {
-      throw new Error('Invalid shared link type');
+      throw new BadRequestException('Invalid shared link type');
     }
 
     const removedAssetIds = await this.sharedLinkAssetRepository.remove(id, dto.assetIds);
@@ -196,31 +222,20 @@ export class SharedLinkService {
   private async findOrFail(userId: string, id: string) {
     const sharedLink = await this.sharedLinkRepository.get(userId, id);
     if (!sharedLink) {
-      throw new Error('Shared link not found');
+      throw new BadRequestException('Shared link not found');
     }
     return sharedLink;
   }
 
-  private validateAndRefreshToken(
-    sharedLink: any,
-    dto: { password?: string; token?: string },
-  ): string {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(`${sharedLink.id}-${sharedLink.password}`);
-    // Use a simple hash for token validation in Workers
-    const hashHex = Array.from(new Uint8Array(data))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    const token = hashHex;
+  private asToken(sharedLink: { id: string; password: string | null }) {
+    return this.ctx.crypto.hashSha256(`${sharedLink.id}-${sharedLink.password}`);
+  }
 
-    const sharedLinkTokens = dto.token?.split(',') || [];
-    if (sharedLink.password !== dto.password && !sharedLinkTokens.includes(token)) {
-      throw new Error('Invalid password');
+  private handleSaveError(error: unknown): never {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('UNIQUE constraint failed: shared_link.slug')) {
+      throw new BadRequestException('Failed to save shared link');
     }
-
-    if (!sharedLinkTokens.includes(token)) {
-      sharedLinkTokens.push(token);
-    }
-    return sharedLinkTokens.join(',');
+    throw error;
   }
 }

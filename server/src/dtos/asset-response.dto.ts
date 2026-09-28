@@ -16,7 +16,7 @@ export interface SanitizedAssetResponseDto {
   thumbhash: string | null;
   originalMimeType?: string;
   localDateTime: Date;
-  duration: string;
+  duration: number | null;
   livePhotoVideoId?: string | null;
   hasMetadata: boolean;
   width: number | null;
@@ -25,8 +25,6 @@ export interface SanitizedAssetResponseDto {
 
 export interface AssetResponseDto extends SanitizedAssetResponseDto {
   createdAt: Date;
-  deviceAssetId: string;
-  deviceId: string;
   ownerId: string;
   owner?: UserResponseDto;
   libraryId?: string | null;
@@ -57,10 +55,8 @@ export type MapAsset = {
   updateId: string;
   status: AssetStatus;
   checksum: Buffer<ArrayBufferLike>;
-  deviceAssetId: string;
-  deviceId: string;
   duplicateId: string | null;
-  duration: string | null;
+  duration: number | null;
   encodedVideoPath: string | null;
   exifInfo?: Selectable<Exif> | null;
   fileCreatedAt: Date;
@@ -121,7 +117,7 @@ export function mapAsset(entity: MapAsset, options: AssetMapOptions = {}): Asset
       originalMimeType: mimeTypes.lookup(entity.originalFileName),
       thumbhash: entity.thumbhash ? hexOrBufferToBase64(entity.thumbhash) : null,
       localDateTime: entity.localDateTime,
-      duration: entity.duration ?? '0:00:00.00000',
+      duration: entity.duration,
       livePhotoVideoId: entity.livePhotoVideoId,
       hasMetadata: false,
       width: entity.width,
@@ -133,10 +129,8 @@ export function mapAsset(entity: MapAsset, options: AssetMapOptions = {}): Asset
   return {
     id: entity.id,
     createdAt: entity.createdAt,
-    deviceAssetId: entity.deviceAssetId,
     ownerId: entity.ownerId,
     owner: entity.owner ? mapUser(entity.owner) : undefined,
-    deviceId: entity.deviceId,
     libraryId: entity.libraryId,
     type: entity.type,
     originalPath: entity.originalPath,
@@ -151,7 +145,7 @@ export function mapAsset(entity: MapAsset, options: AssetMapOptions = {}): Asset
     isArchived: entity.visibility === AssetVisibility.Archive,
     isTrashed: !!entity.deletedAt,
     visibility: entity.visibility,
-    duration: entity.duration ?? '0:00:00.00000',
+    duration: entity.duration,
     exifInfo: entity.exifInfo ? mapExif(entity.exifInfo) : undefined,
     livePhotoVideoId: entity.livePhotoVideoId,
     tags: entity.tags?.map((tag) => mapTag(tag)),

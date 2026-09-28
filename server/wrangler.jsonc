@@ -1,0 +1,66 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "compatibility_date": "2026-09-28",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "main": "src/index.ts",
+  "name": "workers-immich",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_id": "cb8719c8-ada8-4d1c-92d8-0429ffd72940",
+      "database_name": "immich",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "0a37ab56cc5f4d50831e6cb54ef1242e"
+    }
+  ],
+  "migrations": [
+    {
+      "new_sqlite_classes": [
+        "RealtimeHub"
+      ],
+      "tag": "v1"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "immich"
+    }
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "../web/build",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*",
+      "/.well-known/*",
+      "/custom.css"
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "RealtimeHub",
+        "name": "REALTIME"
+      }
+    ]
+  },
+  "vars": {
+    "ENVIRONMENT": "production"
+  },
+  "routes": [
+    {
+      "custom_domain": true,
+      "pattern": "photos.kunwar.dev"
+    }
+  ]
+}

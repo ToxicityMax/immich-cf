@@ -15,15 +15,15 @@ Status labels:
 
 | Area | Status | Current scope |
 |---|---|---|
-| Authentication | Verified | Admin signup, password login, logout, token validation, password changes, API-key permissions, PIN lifecycle, and session elevation. |
-| Users | Verified | Current user, preferences, user listing, admin creation, duplicate protection, admin lookup, and role enforcement. |
+| Authentication | Verified | Admin signup, password login, logout, token validation, password changes, API-key CRUD and rotation, PIN lifecycle, and session elevation. |
+| Users | Verified | Current user, preferences, user listing, admin creation, duplicate protection, admin lookup, role enforcement, and the required per-user cluster-group identifier. Cluster-group people APIs remain unavailable. |
 | Basic assets | Verified | JPEG upload, checksum duplicate detection, direct metadata update, statistics, device IDs, original download, and soft delete. |
-| Albums | Verified | Create, list, fetch, update, delete, statistics, and add/remove assets. |
-| Locked assets | Verified | Elevation checks plus isolation from albums, links, default search, folder view, stacks, indirect Live Photo access, and cross-user sync. |
+| Albums | Verified | Create, list, fetch, update, delete, statistics, owner-role membership, v3 owned/shared filtering, and add/remove assets. |
+| Locked assets | Verified | Elevation checks plus isolation from albums, links, default search, folder view, stacks, indirect Live Photo access, and owner/cross-user sync. PIN elevation changes force sync reset convergence. |
 | Realtime | Verified for core events | Socket.IO-compatible authentication, Engine.IO handshake, owner-targeted asset events, and session revocation. |
-| Server discovery | Verified | Ping, version, feature flags, public config, media types, about, and `/.well-known/immich`. |
+| Server discovery | Verified | V3.2.2 ping, version including prerelease, feature flags, public config, media types, about, API 404 behavior, and `/.well-known/immich`. |
 
-The active suite currently has 66 API tests and 4 Socket.IO tests. Coverage is strongest for the areas above.
+The active suite currently has 125 API tests and 4 Socket.IO tests. Coverage is strongest for the areas above.
 
 ## Partial Features
 
@@ -36,11 +36,10 @@ The active suite currently has 66 API tests and 4 Socket.IO tests. Coverage is s
 | RAW, HEIC, and other non-browser images | Partial | Files can be accepted, but preview generation is incomplete and may not produce usable timeline media. |
 | Live Photos | Partial | Relationships can be updated, but upload and sync behavior is not complete enough for a compatibility claim. |
 | Sidecars | Partial | Sidecar bytes can be stored, but EXIF write-back and complete sidecar lifecycle behavior are not implemented. |
-| Asset replacement | Partial | The route exists, but active resource access does not currently implement `AssetReplace`, and quota replacement accounting needs validation. |
 | Asset copy | Partial | Favorite state is copied; albums, shared links, stacks, and sidecars are stubs. |
-| Asset editing | Partial | Edit instructions can be stored, but edited media is not rendered and the expected completion event is not produced. |
+| Asset editing | Partial | Edit create, replacement, removal, edited-file cleanup, and mobile sync convergence are verified. Edited media is not rendered and the expected completion event is not produced. |
 | Asset jobs | Partial | Job endpoints accept requests, but refresh metadata, regenerate thumbnail, and transcode operations are no-ops. |
-| Permanent deletion | Partial | Empty trash removes rows and R2 objects inline. Forced deletion, quota decrementing, audit records, and failure recovery need completion. |
+| Permanent deletion | Partial, deferred | Empty trash is bind-safe, repairs stacks, atomically removes D1 relationships/assets, decrements original-byte quota usage, and generates sync tombstones. Immediate forced asset cleanup is intentionally deferred. R2 objects are deleted before the D1 batch because the services cannot share a transaction; an R2 failure leaves D1 and quota unchanged, while a later D1 failure can leave retry-safe missing objects until the request is retried. The old v2 original-replacement endpoint does not exist in v3 and is not remaining work. |
 
 ### Timeline, Search, And Organization
 
@@ -48,9 +47,9 @@ The active suite currently has 66 API tests and 4 Socket.IO tests. Coverage is s
 |---|---|---|
 | Timeline | Partial | Basic own-user buckets work. Partner inclusion, stack collapsing, trash semantics, people filters, and some query options are incomplete. |
 | Search | Partial and disabled | Metadata search routes exist, but only a subset of filters is implemented, album results are incomplete, and the server advertises search as disabled. |
-| Partners | Partial | Relationship CRUD and direct access exist. Main timeline inclusion and mobile partner backfills remain incomplete. |
-| Stacks | Partial | Active CRUD routes exist. Creation, retrieval, large merges, and locked-primary behavior are tested; update/delete coverage and timeline collapsing remain. |
-| Tags | Partial | CRUD and assignment exist. Hierarchy closure, descendants, response mapping, and comprehensive tests remain. |
+| Partners | Partial | Relationship CRUD, direct access, and mobile asset/EXIF/stack sync backfills exist. Main timeline inclusion and upstream mobile smoke testing remain incomplete. |
+| Stacks | Partial | Active CRUD routes use v3 response mapping and permanent deletion repairs the primary asset. Update/delete coverage and timeline collapsing remain. |
+| Tags | Partial | CRUD, v3 response mapping, subtree rename, hierarchy closure/reparent invariants, and bind-safe bulk assignment are verified. Upstream client smoke testing remains. |
 | Activities | Implemented | Basic activity paths exist and sanitized responses are covered indirectly. Collaboration and realtime coverage remain incomplete. |
 | Folder view | Partial | Folder routes work on stored object keys, but R2-generated paths are not equivalent to meaningful external-library source folders. |
 
@@ -58,28 +57,28 @@ The active suite currently has 66 API tests and 4 Socket.IO tests. Coverage is s
 
 | Feature | Status | Remaining work |
 |---|---|---|
-| Shared links | Partial | Basic album and individual links work. Password cookie persistence, shared-link archive downloads, and complete validation need work. |
-| Archive downloads | Partial | Authenticated ZIP routes exist. Shared-link authentication and large archive behavior need coverage. |
-| Memories | Partial | CRUD and asset membership exist. Responses need complete mapping, and automatic "On this day" generation has no scheduled implementation. |
+| Shared links | Partial | Album and individual links, v3 DTO validation, password-cookie login, owner-only membership changes, and shared archive authorization are verified. Upstream client smoke testing remains. |
+| Archive downloads | Partial | JSON and web form ZIP requests, sanitized names, shared-link authorization, and D1 bind-safe asset queries are verified. Edited assets and large-stream backpressure remain incomplete. |
+| Memories | Partial | CRUD, query filters, pagination, validation, response mapping, and asset membership exist. Automatic "On this day" generation has no scheduled implementation. |
 
 ### Mobile Sync
 
 | Feature | Status | Remaining work |
 |---|---|---|
-| Sync routes | Partial | Full, delta, and streaming infrastructure exist, but the incomplete entity and audit behavior below prevents a compatibility claim. |
+| Sync routes | Partial | Snapshot-bounded keyset paging, V2 assets/albums, exact EXIF and asset-edit entities, partner/shared-album backfills, composite checkpoints, deletion audits, locked owner-family isolation, validation, framing, and deprecated-type rejection are integration-tested. Legacy full/delta routes have been removed; unsupported entity families and upstream mobile smoke testing remain. |
 | People and faces | Unavailable by design | Sync request types return no entities because ML people/faces are not implemented. |
-| Partner and shared-album backfills | Partial | Partner assets, partner EXIF, partner stacks, album assets, and album EXIF request types are stubs. |
-| Deletion convergence | Partial | Audit tables exist, but active mutations do not consistently write every required audit record. Hard deletes and relationship removals can fail to converge on clients. |
-| Sync testing | Partial | Cross-user authorization is covered. End-to-end initial sync, incremental updates, hard deletes, and relationship removals need NDJSON tests. |
+| Partner and shared-album backfills | Partial | Partner assets, EXIF, and stacks plus album users, assets, EXIF, and album-to-asset relations implement resumable composite backfills and completion markers. Integration tests exercise partner asset and every shared-album backfill shape; partner EXIF/stack backfill coverage and mobile smoke testing remain. |
+| Deletion convergence | Partial | Active hard deletes and explicit removals generate audit records, with album and memory cascade suppression verified for representative paths. Exhaustive route-level coverage and mobile convergence testing remain. |
+| Sync testing | Partial | NDJSON tests cover snapshot bounds, paging beyond 1,000 rows, V2 albums, EXIF, edits, cross-user isolation, hard-delete tombstones, partner resume, unelevated/elevated locked-family isolation, lock transition convergence, favorite masking, and shared-album composite backfills. An upstream mobile client is not run in CI. |
 
 ### Administration And Configuration
 
 | Feature | Status | Remaining work |
 |---|---|---|
-| System configuration | Partial | A reduced configuration is stored, but many settings are hardcoded or not consumed by active services. |
-| Custom CSS | Unavailable | `/custom.css` currently returns an empty stylesheet. |
+| System configuration | Partial | V3 public, user, admin, and legacy admin visibility contracts are validated and tested. Unsupported infrastructure settings remain present but forced disabled and are not consumed by active services. |
+| Custom CSS | Implemented | `/custom.css` serves the configured admin theme stylesheet. |
 | Storage statistics | Partial | Capacity is hardcoded and derivative R2 usage is not fully represented. |
-| User deletion | Partial | Soft deletion works, but forced deletion has no background cleanup and can remain in `removing`. |
+| User deletion | Partial, deferred | Soft deletion works. Resumable forced account cleanup is intentionally deferred and a forced user can remain in `removing`; this is inherited product debt rather than unfinished v3 contract migration. |
 | Admin web UI | Partial | The preserved UI still exposes libraries, jobs, maintenance, backup, and configuration controls that are absent or incomplete. |
 | Licensing | Partial | Storage and validation are simplified and are not equivalent to upstream license verification. |
 
@@ -102,7 +101,7 @@ Some of these are intentionally outside the current proof-of-concept. Others cou
 
 ## Web UI Gaps
 
-The web client is preserved largely intact, so route absence alone does not hide unsupported features. Before production use, unsupported pages and actions must either be implemented or capability-gated.
+The web client is preserved largely intact, so route absence alone does not hide unsupported features. Capability gating is intentionally deferred for the current scope; unsupported pages or controls may remain visible and fail against unavailable API families.
 
 Priority UI gaps include:
 
@@ -113,29 +112,29 @@ Priority UI gaps include:
 - Asset editing and no-op job actions
 - System settings whose configuration branches are not supported
 
-Search, map, people, duplicate, and ML-driven pages should remain hidden by server capability flags. Automated web tests should verify that unsupported direct routes and controls do not reappear.
+Search, map, people, duplicate, and ML-driven features remain disabled in server feature responses. Additional web route and control gating is not currently planned.
 
-## Roadmap
+## Migration Closure
 
-### P0: Correctness And Honest Client Behavior
+The enabled API surface is ported to v3.2.2 and has protocol-level smoke coverage. Remaining migration validation is:
 
-1. Build an API contract matrix against Immich v2.5.2 and add web/mobile smoke tests.
-2. Complete sync audit writes, hard-delete convergence, relationship removals, and partner/shared-album backfills.
-3. Correct permanent deletion, quota decrementing, asset replacement accounting, and forced user deletion.
-4. Provide a real derivative pipeline or disable media formats and UI actions that cannot produce valid previews.
-5. Capability-gate unsupported web pages and no-op actions.
-6. Align the system configuration response with the settings UI or reduce the UI to the supported contract.
+1. Run the exact v3.2.2 web build through the documented core flows in a real browser. There is currently no browser E2E runner.
+2. Run an upstream v3.2.2 mobile client against initial/incremental sync, deletion convergence, and partner/shared-album backfills. No mobile client is available in this repository.
 
-### P1: Core Feature Completion
+## Deferred Product Backlog
 
-1. Complete partner and stack-aware timeline behavior.
-2. Complete password-protected shared links and shared archive downloads.
+These limitations existed in the v2 Worker baseline or depend on infrastructure outside the direct v3 port. They are documented but are not migration blockers:
+
+1. Add production image derivatives, video transcoding and thumbnails, and usable RAW/HEIC previews, or explicitly reject unsupported media.
+2. Complete partner and stack-aware timeline behavior and the remaining timeline filters.
 3. Complete Live Photo and sidecar upload, download, sync, and deletion behavior.
-4. Complete memory response mapping and add scheduled memory generation.
-5. Complete tag hierarchy and descendant semantics.
-6. Add tests for trash emptying, ZIP downloads, memories, tags, timeline options, configuration, and media variants.
+4. Render edited media and emit the expected completion event; harden large ZIP streaming backpressure.
+5. Add scheduled memory generation and optional deferred cleanup with Queues or Cron Triggers.
+6. Implement resumable forced asset/user cleanup if it becomes a product requirement.
+7. Complete asset-copy relationship semantics, storage accounting, and the remaining route-level mutation tests.
+8. Optionally capability-gate unsupported web pages and no-op actions; this is explicitly deferred and not required for the current scope.
 
-### P2: Cloudflare-Native Expansion
+### Optional Cloudflare-Native Expansion
 
 1. Use Cloudflare Queues and Cron Triggers for deferred media work, cleanup, and memory generation.
 2. Use Cloudflare Images or an external image service for dependable derivatives.
@@ -149,7 +148,7 @@ Search, map, people, duplicate, and ML-driven pages should remain hidden by serv
 
 A feature should move to **Verified** only when:
 
-1. Its active Hono routes match the v2.5.2 contract.
+1. Its active Hono routes match the v3.2.2 contract.
 2. Authorization, cross-user isolation, validation, and error paths are tested.
 3. D1, R2, quota, audit, and relationship side effects are correct.
 4. Required realtime and mobile sync effects are implemented.

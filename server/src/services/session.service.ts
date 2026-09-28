@@ -17,6 +17,7 @@ import type { ServiceContext } from 'src/context';
 import { SessionRepository } from 'src/repositories/session.repository';
 import { requireAccess } from 'src/utils/access';
 import { AccessRepository } from 'src/repositories/access.repository';
+import { generateUUIDv7 } from 'src/utils/uuid';
 
 export class SessionService {
   private get db() {
@@ -62,7 +63,7 @@ export class SessionService {
       token: tokenHashed,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      updateId: this.crypto.randomUUID(),
+      updateId: generateUUIDv7(),
     });
 
     return { ...this.mapSession(session, auth.session.id), token };
@@ -129,7 +130,7 @@ export class SessionService {
       permission: Permission.SessionLock,
       ids: [id],
     });
-    await this.sessionRepo.update(id, { pinExpiresAt: null });
+    await this.sessionRepo.update(id, { pinExpiresAt: null, isPendingSyncReset: true });
   }
 
   async handleCleanup(): Promise<void> {

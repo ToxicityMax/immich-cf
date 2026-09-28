@@ -1,7 +1,8 @@
-import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
-import { getAltText } from '$lib/utils/thumbnail-util';
 import { AssetVisibility } from '@immich/sdk';
 import { init, register, waitLocale } from 'svelte-i18n';
+import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
+import { locale } from '$lib/stores/preferences.store';
+import { getAltText } from '$lib/utils/thumbnail-util';
 
 interface Person {
   name: string;
@@ -14,6 +15,7 @@ const fourPeople: Person[] = [{ name: 'person1' }, { name: 'person2' }, { name: 
 
 describe('getAltText', () => {
   beforeAll(async () => {
+    locale.set('en-US');
     await init({ fallbackLocale: 'en-US' });
     register('en-US', () => import('$i18n/en.json'));
     await waitLocale('en-US');
@@ -63,6 +65,15 @@ describe('getAltText', () => {
         ratio: 1,
         thumbhash: null,
         fileCreatedAt: {
+          year: testDate.getUTCFullYear(),
+          month: testDate.getUTCMonth() + 1, // Note: getMonth() is 0-based
+          day: testDate.getUTCDate(),
+          hour: testDate.getUTCHours(),
+          minute: testDate.getUTCMinutes(),
+          second: testDate.getUTCSeconds(),
+          millisecond: testDate.getUTCMilliseconds(),
+        },
+        createdAt: {
           year: testDate.getUTCFullYear(),
           month: testDate.getUTCMonth() + 1, // Note: getMonth() is 0-based
           day: testDate.getUTCDate(),

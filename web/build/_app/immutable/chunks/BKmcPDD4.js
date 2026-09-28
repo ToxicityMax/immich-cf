@@ -1,1 +1,0 @@
-const t="دەربارە",c="هەژمار",o="ڕێکخستنی هەژمار",n="دانپێدانان",s={about:t,account:c,account_settings:o,acknowledge:n};export{t as about,c as account,o as account_settings,n as acknowledge,s as default};

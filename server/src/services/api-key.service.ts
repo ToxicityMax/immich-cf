@@ -17,6 +17,7 @@ import { Permission } from 'src/enum';
 import type { ServiceContext } from 'src/context';
 import { ApiKeyRepository } from 'src/repositories/api-key.repository';
 import { isGranted } from 'src/utils/access';
+import { generateUUIDv7 } from 'src/utils/uuid';
 
 export class ApiKeyService {
   private get crypto() {
@@ -50,10 +51,11 @@ export class ApiKeyService {
       permissions: JSON.stringify(dto.permissions),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      updateId: this.crypto.randomUUID(),
+      updateId: generateUUIDv7(),
     });
 
-    return { secret: token, apiKey: this.map(entity) };
+    const apiKey = this.map(entity);
+    return { ...apiKey, secret: token, apiKey };
   }
 
   async update(
@@ -74,7 +76,10 @@ export class ApiKeyService {
       throw new ApiKeyError(400, 'Cannot grant permissions you do not have');
     }
 
-    const updateData: Record<string, unknown> = {};
+    const updateData: Record<string, unknown> = {
+      updatedAt: new Date().toISOString(),
+      updateId: generateUUIDv7(),
+    };
     if (dto.name !== undefined) {
       updateData.name = dto.name;
     }
@@ -87,6 +92,32 @@ export class ApiKeyService {
       await this.ctx.realtime.disconnectApiKey(id);
     }
     return this.map(key);
+  }
+
+  async rotate(auth: AuthDto, id: string): Promise<APIKeyCreateResponseDto> {
+    const existing = await this.apiKeyRepo.getById(auth.user.id, id);
+    if (!existing) {
+      throw new ApiKeyError(400, 'API Key not found');
+    }
+
+    const permissions = this.parsePermissions(existing.permissions);
+    if (
+      auth.apiKey &&
+      !isGranted({ requested: permissions, current: auth.apiKey.permissions })
+    ) {
+      throw new ApiKeyError(400, 'Cannot rotate an API Key with permissions you do not have');
+    }
+
+    const token = this.crypto.randomBytesAsText(32);
+    const key = await this.apiKeyRepo.update(auth.user.id, id, {
+      key: await this.crypto.hashSha256(token),
+      updatedAt: new Date().toISOString(),
+      updateId: generateUUIDv7(),
+    });
+    await this.ctx.realtime.disconnectApiKey(id);
+
+    const apiKey = this.map(key);
+    return { ...apiKey, secret: token, apiKey };
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {
@@ -126,24 +157,25 @@ export class ApiKeyService {
   }
 
   private map(entity: Record<string, unknown>): APIKeyResponseDto {
-    let permissions: Permission[];
-    if (typeof entity.permissions === 'string') {
-      try {
-        permissions = JSON.parse(entity.permissions as string) as Permission[];
-      } catch {
-        permissions = [];
-      }
-    } else {
-      permissions = (entity.permissions as Permission[]) || [];
-    }
-
     return {
       id: entity.id as string,
       name: entity.name as string,
       createdAt: new Date(entity.createdAt as string),
       updatedAt: new Date(entity.updatedAt as string),
-      permissions,
+      permissions: this.parsePermissions(entity.permissions),
     };
+  }
+
+  private parsePermissions(value: unknown): Permission[] {
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value) as Permission[];
+      } catch {
+        return [];
+      }
+    }
+
+    return (value as Permission[]) || [];
   }
 }
 

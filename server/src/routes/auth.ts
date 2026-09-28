@@ -16,7 +16,7 @@ import {
 } from '../dtos/auth.dto';
 import { authMiddleware } from '../middleware/auth';
 import { AuthType, ImmichCookie, Permission } from '../enum';
-import { BadRequestException } from '../utils/errors';
+import { BadRequestException, UnauthorizedException } from '../utils/errors';
 
 const app = new Hono<AppEnv>();
 
@@ -40,6 +40,10 @@ async function parseJson<T>(request: { json(): Promise<unknown> }, schema: ZodTy
 app.post('/login', async (c) => {
   const services = c.get('services');
   const body = await c.req.json();
+  const config = await services.systemConfig.getSystemConfig();
+  if (!config.passwordLogin.enabled) {
+    throw new UnauthorizedException('Password login has been disabled');
+  }
 
   const isSecure = c.req.url.startsWith('https');
   const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '0.0.0.0';
