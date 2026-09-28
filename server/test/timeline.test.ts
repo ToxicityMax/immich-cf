@@ -81,7 +81,7 @@ describe('Timeline v3 smoke path', () => {
 
     const thumbnailResponse = await authRequest(`/api/assets/${upload.id}/thumbnail`, login.accessToken);
     expect(thumbnailResponse.status).toBe(200);
-    expect(thumbnailResponse.headers.get('content-type')).toBe('image/webp');
+    expect(thumbnailResponse.headers.get('content-type')).toBe('image/jpeg');
     expect(new Uint8Array(await thumbnailResponse.arrayBuffer())).toEqual(new Uint8Array(image));
 
     const originalResponse = await authRequest(`/api/assets/${upload.id}/original`, login.accessToken);

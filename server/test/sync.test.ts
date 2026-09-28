@@ -82,6 +82,31 @@ const OWNER_ASSET_TYPES = [
   'AssetEditsV1',
 ];
 
+const MOBILE_SYNC_TYPES = [
+  'AuthUsersV1',
+  'UsersV1',
+  'AssetsV2',
+  'AssetExifsV1',
+  'AssetEditsV1',
+  'AssetMetadataV1',
+  'PartnersV1',
+  'PartnerAssetsV2',
+  'PartnerAssetExifsV1',
+  'AlbumsV2',
+  'AlbumUsersV1',
+  'AlbumAssetsV2',
+  'AlbumAssetExifsV1',
+  'AlbumToAssetsV1',
+  'MemoriesV1',
+  'MemoryToAssetsV1',
+  'StacksV1',
+  'PartnerStacksV1',
+  'UserMetadataV1',
+  'PeopleV1',
+  'AssetFacesV2',
+  'AssetOcrV1',
+];
+
 describe('Sync v3', () => {
   beforeAll(async () => {
     await setupDatabase();
@@ -107,6 +132,18 @@ describe('Sync v3', () => {
     }));
     expect(items.at(-1)?.type).toBe('SyncCompleteV1');
     expect(items.at(-1)?.ack.split('|')[1]).toMatch(UUID_V7);
+  });
+
+  it('streams assets for the exact mobile v3.2.1 sync request', async () => {
+    const { token, userId } = await createTestAdmin();
+    const assetId = await uploadTestAsset(token);
+    const items = await getSyncItems(token, MOBILE_SYNC_TYPES);
+
+    expect(items).toContainEqual(expect.objectContaining({
+      type: 'AssetV2',
+      data: expect.objectContaining({ id: assetId, ownerId: userId }),
+    }));
+    expect(items.at(-1)?.type).toBe('SyncCompleteV1');
   });
 
   it('derives album ownership from the owner membership', async () => {

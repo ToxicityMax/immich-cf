@@ -3,8 +3,8 @@
   "version": "3.2.2",
   "license": "GNU Affero General Public License version 3",
   "scripts": {
-    "dev": "wrangler dev --ip 0.0.0.0",
-    "dev:remote": "wrangler dev --remote --ip 0.0.0.0",
+    "dev": "wrangler dev",
+    "dev:remote": "wrangler dev --remote",
     "deploy": "wrangler deploy",
     "test": "vitest",
     "test:socket": "vitest --config vitest.socket.config.ts",
@@ -30,7 +30,7 @@
     "lodash": "*"
   },
   "devDependencies": {
-    "wrangler": "*",
+    "wrangler": "^4.143.0",
     "@cloudflare/workers-types": "*",
     "@cloudflare/vitest-pool-workers": "*",
     "vitest": "*",

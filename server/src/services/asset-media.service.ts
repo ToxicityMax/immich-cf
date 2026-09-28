@@ -121,6 +121,32 @@ function getFilenameExtension(path: string): string {
   return extname(path);
 }
 
+async function identifyImageStream(body: ReadableStream): Promise<{ body: ReadableStream; contentType?: string }> {
+  const [inspectionStream, responseStream] = body.tee();
+  const reader = inspectionStream.getReader();
+  const { value } = await reader.read();
+  await reader.cancel();
+
+  if (!value) {
+    return { body: responseStream };
+  }
+
+  if (value[0] === 0xff && value[1] === 0xd8 && value[2] === 0xff) {
+    return { body: responseStream, contentType: 'image/jpeg' };
+  }
+  if (value[0] === 0x89 && value[1] === 0x50 && value[2] === 0x4e && value[3] === 0x47) {
+    return { body: responseStream, contentType: 'image/png' };
+  }
+  if (String.fromCharCode(...value.subarray(0, 4)) === 'RIFF' && String.fromCharCode(...value.subarray(8, 12)) === 'WEBP') {
+    return { body: responseStream, contentType: 'image/webp' };
+  }
+  if (String.fromCharCode(...value.subarray(0, 3)) === 'GIF') {
+    return { body: responseStream, contentType: 'image/gif' };
+  }
+
+  return { body: responseStream };
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -438,10 +464,11 @@ export class AssetMediaService {
     }
 
     const fileName = `${getFileNameWithoutExtension(originalFileName)}_${size}${getFilenameExtension(path)}`;
-    const contentType = mimeTypes.lookup(path) || 'image/webp';
+    const identified = await identifyImageStream(r2Object.body);
+    const contentType = identified.contentType || r2Object.httpMetadata?.contentType || mimeTypes.lookup(path) || 'image/webp';
 
     return {
-      body: r2Object.body,
+      body: identified.body,
       contentType,
       fileName,
       size: r2Object.size,
