@@ -36,10 +36,11 @@ Matching only the route name or returning HTTP 200 is not sufficient.
 | Albums | Integration tested | Core CRUD, owner-role membership, v3 ownership/shared filtering, and asset membership are covered. Collaboration edge cases are not comprehensive. |
 | Organization APIs | Integration tested for repaired contracts | Tags, memories, stacks, partner creation, validation, response mapping, fresh-schema IDs, and stack-primary repair are covered in `server/test/organization.test.ts`. Timeline collapsing and scheduled memory generation remain incomplete. |
 | Realtime | Integration tested for core events | Authentication, Engine.IO handshake, asset lifecycle targeting, and session revocation are covered. All upstream event families are not covered. |
+| Notifications | Partial | The authenticated v3 inbox query is integration-tested and returns an empty list. Producers, persistence, updates, deletion, and email delivery are unavailable. |
 | Web SPA | Partial | The upstream UI is largely preserved, but it still exposes some features that the Worker does not fully support. |
 | Mobile sync | Partial | Streaming, partner/shared-album composite backfills, locked isolation, and representative deletion convergence are integration-tested. People/faces remain unavailable, mutation coverage is not exhaustive, and no upstream mobile client runs in CI. |
 | Media processing | Partial | Original files work. Video transcoding, video thumbnails, RAW previews, and dependable image derivatives are not complete. |
-| Full upstream API | Incomplete | OAuth, notifications, libraries, jobs, backups, maintenance, plugins, ML, and map APIs are absent or intentionally disabled. |
+| Full upstream API | Incomplete | OAuth, full notifications, libraries, jobs, backups, maintenance, plugins, ML, and map APIs are absent or intentionally disabled. |
 
 ## Automated Verification
 

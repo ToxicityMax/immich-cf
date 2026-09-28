@@ -15,7 +15,7 @@ export default defineWorkersConfig(async () => {
         workers: {
           isolatedStorage: false,
           singleWorker: true,
-          wrangler: { configPath: './wrangler.toml' },
+          wrangler: { configPath: './wrangler.jsonc' },
           miniflare: {
             d1Databases: ['DB'],
             r2Buckets: ['BUCKET'],

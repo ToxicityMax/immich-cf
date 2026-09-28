@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS "api_key" (
 );
 
 CREATE INDEX IF NOT EXISTS "IDX_api_key_updateId" ON "api_key" ("updateId");
+CREATE INDEX IF NOT EXISTS "IDX_api_key_key" ON "api_key" ("key");
 
 -- ============================================================================
 -- stack
@@ -564,6 +565,8 @@ CREATE TABLE IF NOT EXISTS "asset_audit" (
   "id" TEXT NOT NULL,
   "assetId" TEXT NOT NULL,
   "ownerId" TEXT NOT NULL,
+  "reason" TEXT NOT NULL DEFAULT 'delete',
+  "visibility" TEXT,
   "deletedAt" TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY ("id")
 );
@@ -603,6 +606,7 @@ CREATE TABLE IF NOT EXISTS "stack_audit" (
   "id" TEXT NOT NULL,
   "stackId" TEXT NOT NULL,
   "userId" TEXT NOT NULL,
+  "visibility" TEXT,
   "deletedAt" TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY ("id")
 );
@@ -627,6 +631,8 @@ CREATE TABLE IF NOT EXISTS "album_asset_audit" (
   "id" TEXT NOT NULL,
   "albumId" TEXT NOT NULL,
   "assetId" TEXT NOT NULL,
+  "visibility" TEXT,
+  "relationUpdateId" TEXT,
   "deletedAt" TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY ("id"),
   FOREIGN KEY ("albumId") REFERENCES "album" ("id") ON UPDATE CASCADE ON DELETE CASCADE
@@ -653,6 +659,7 @@ CREATE TABLE IF NOT EXISTS "memory_asset_audit" (
   "id" TEXT NOT NULL,
   "memoryId" TEXT NOT NULL,
   "assetId" TEXT NOT NULL,
+  "visibility" TEXT,
   "deletedAt" TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY ("id"),
   FOREIGN KEY ("memoryId") REFERENCES "memory" ("id") ON UPDATE CASCADE ON DELETE CASCADE
@@ -689,6 +696,8 @@ CREATE TABLE IF NOT EXISTS "asset_metadata_audit" (
   "id" TEXT NOT NULL,
   "assetId" TEXT NOT NULL,
   "key" TEXT NOT NULL,
+  "ownerId" TEXT,
+  "visibility" TEXT,
   "deletedAt" TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY ("id")
 );
@@ -702,6 +711,8 @@ CREATE TABLE IF NOT EXISTS "asset_edit_audit" (
   "id" TEXT NOT NULL,
   "editId" TEXT NOT NULL,
   "assetId" TEXT NOT NULL,
+  "ownerId" TEXT,
+  "visibility" TEXT,
   "deletedAt" TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY ("id")
 );
@@ -751,18 +762,29 @@ END;
 CREATE TRIGGER IF NOT EXISTS "TR_asset_delete_audit"
 AFTER DELETE ON "asset" FOR EACH ROW
 BEGIN
-  INSERT INTO "asset_audit" ("id", "assetId", "ownerId") VALUES (
+  INSERT INTO "asset_audit" ("id", "assetId", "ownerId", "reason", "visibility") VALUES (
     lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
-    OLD."id", OLD."ownerId"
+    OLD."id", OLD."ownerId", 'delete', OLD."visibility"
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS "TR_asset_lock_audit"
+AFTER UPDATE OF "visibility" ON "asset" FOR EACH ROW
+WHEN OLD."visibility" != 'locked' AND NEW."visibility" = 'locked'
+BEGIN
+  INSERT INTO "asset_audit" ("id", "assetId", "ownerId", "reason", "visibility") VALUES (
+    lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
+    NEW."id", NEW."ownerId", 'lock', NEW."visibility"
   );
 END;
 
 CREATE TRIGGER IF NOT EXISTS "TR_asset_metadata_delete_audit"
 AFTER DELETE ON "asset_metadata" FOR EACH ROW
 BEGIN
-  INSERT INTO "asset_metadata_audit" ("id", "assetId", "key") VALUES (
+  INSERT INTO "asset_metadata_audit" ("id", "assetId", "key", "ownerId", "visibility") VALUES (
     lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
-    OLD."assetId", OLD."key"
+    OLD."assetId", OLD."key", (SELECT "ownerId" FROM "asset" WHERE "id" = OLD."assetId"),
+    (SELECT "visibility" FROM "asset" WHERE "id" = OLD."assetId")
   );
 END;
 
@@ -803,9 +825,9 @@ WHEN NOT EXISTS (
   SELECT 1 FROM "sync_delete_guard" WHERE "entityType" = 'album' AND "entityId" = OLD."albumId"
 )
 BEGIN
-  INSERT INTO "album_asset_audit" ("id", "albumId", "assetId") VALUES (
+  INSERT INTO "album_asset_audit" ("id", "albumId", "assetId", "visibility", "relationUpdateId") VALUES (
     lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
-    OLD."albumId", OLD."assetId"
+    OLD."albumId", OLD."assetId", (SELECT "visibility" FROM "asset" WHERE "id" = OLD."assetId"), OLD."updateId"
   );
 END;
 
@@ -831,18 +853,18 @@ WHEN NOT EXISTS (
   SELECT 1 FROM "sync_delete_guard" WHERE "entityType" = 'memory' AND "entityId" = OLD."memoriesId"
 )
 BEGIN
-  INSERT INTO "memory_asset_audit" ("id", "memoryId", "assetId") VALUES (
+  INSERT INTO "memory_asset_audit" ("id", "memoryId", "assetId", "visibility") VALUES (
     lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
-    OLD."memoriesId", OLD."assetId"
+    OLD."memoriesId", OLD."assetId", (SELECT "visibility" FROM "asset" WHERE "id" = OLD."assetId")
   );
 END;
 
 CREATE TRIGGER IF NOT EXISTS "TR_stack_delete_audit"
 AFTER DELETE ON "stack" FOR EACH ROW
 BEGIN
-  INSERT INTO "stack_audit" ("id", "stackId", "userId") VALUES (
+  INSERT INTO "stack_audit" ("id", "stackId", "userId", "visibility") VALUES (
     lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
-    OLD."id", OLD."ownerId"
+    OLD."id", OLD."ownerId", (SELECT "visibility" FROM "asset" WHERE "id" = OLD."primaryAssetId")
   );
 END;
 
@@ -983,9 +1005,10 @@ END;
 CREATE TRIGGER IF NOT EXISTS "TR_asset_edit_delete_audit"
 AFTER DELETE ON "asset_edit" FOR EACH ROW
 BEGIN
-  INSERT INTO "asset_edit_audit" ("id", "editId", "assetId", "deletedAt") VALUES (
+  INSERT INTO "asset_edit_audit" ("id", "editId", "assetId", "ownerId", "visibility") VALUES (
     lower(printf('%08x-%04x-7%03x-%04x-%012x', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) >> 16, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) & 65535, random() & 4095, (random() & 16383) | 32768, random() & 281474976710655)),
-    OLD."id", OLD."assetId", strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    OLD."id", OLD."assetId", (SELECT "ownerId" FROM "asset" WHERE "id" = OLD."assetId"),
+    (SELECT "visibility" FROM "asset" WHERE "id" = OLD."assetId")
   );
 END;
 

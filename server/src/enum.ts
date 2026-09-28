@@ -150,6 +150,10 @@ export enum Permission {
   MemoryAssetCreate = 'memoryAsset.create',
   MemoryAssetDelete = 'memoryAsset.delete',
 
+  NotificationRead = 'notification.read',
+  NotificationUpdate = 'notification.update',
+  NotificationDelete = 'notification.delete',
+
   PartnerCreate = 'partner.create',
   PartnerRead = 'partner.read',
   PartnerUpdate = 'partner.update',

@@ -4,6 +4,7 @@
   "license": "GNU Affero General Public License version 3",
   "scripts": {
     "dev": "wrangler dev --ip 0.0.0.0",
+    "dev:remote": "wrangler dev --remote --ip 0.0.0.0",
     "deploy": "wrangler deploy",
     "test": "vitest",
     "test:socket": "vitest --config vitest.socket.config.ts",

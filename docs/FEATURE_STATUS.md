@@ -91,7 +91,7 @@ The following upstream feature families do not have a complete active Worker imp
 - External library scanning and filesystem watching
 - Background job and queue administration
 - OAuth/OIDC login
-- Email and user notifications
+- Email delivery and notification producers, persistence, and mutations. The authenticated notification inbox route is available and returns an empty list.
 - Database backup and restore APIs
 - Maintenance mode worker APIs
 - Plugin and workflow execution
@@ -105,7 +105,7 @@ The web client is preserved largely intact, so route absence alone does not hide
 
 Priority UI gaps include:
 
-- Notification bell and notification requests
+- Notification actions beyond the empty inbox compatibility route
 - External libraries
 - Job and queue administration
 - Maintenance and database backup pages

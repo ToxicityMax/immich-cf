@@ -12,7 +12,7 @@ export default defineWorkersConfig(async () => {
       exclude: ['test/socket.test.ts'],
       poolOptions: {
         workers: {
-          wrangler: { configPath: './wrangler.toml' },
+          wrangler: { configPath: './wrangler.jsonc' },
           miniflare: {
             d1Databases: ['DB'],
             r2Buckets: ['BUCKET'],
